@@ -15,6 +15,7 @@
 #include "tuner.h"
 #include "ui-tuner-set.h"
 #include "ui-signal.h"
+#include "audio_bridge.h"
 
 static GtkWidget *dialog, *content;
 static GtkWidget *r_serial, *c_serial;
@@ -440,6 +441,8 @@ connection_dialog_callback(gpointer userdata)
     gtk_widget_set_sensitive(ui.b_connect, TRUE);
     wait_for_tuner = FALSE;
     gtk_widget_destroy(dialog);
+
+    audio_bridge_apply_state();
 
     dialog_callback = 0;
     return G_SOURCE_REMOVE;

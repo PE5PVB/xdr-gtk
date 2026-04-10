@@ -5,6 +5,7 @@
 #include "tuner.h"
 #include "conf.h"
 #include "stationlist.h"
+#include "audio_bridge.h"
 
 static void tuner_modify_frequency_full(guint, guint, guint);
 
@@ -87,6 +88,16 @@ tuner_set_volume()
 {
     gchar buffer[5];
     conf.volume = lround(gtk_scale_button_get_value(GTK_SCALE_BUTTON(ui.volume)));
+
+    /* When the audio bridge is active, the slider controls the bridge's
+       per-stream playback volume instead of the radio. The radio's volume
+       is left untouched (whatever it was before the bridge started). */
+    if (audio_bridge_is_running())
+    {
+        audio_bridge_set_volume(conf.volume);
+        return;
+    }
+
     g_snprintf(buffer, sizeof(buffer), "Y%d", conf.volume);
     tuner_write(tuner.thread, buffer);
     tuner.last_set_volume = g_get_real_time() / 1000;

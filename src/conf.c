@@ -46,6 +46,10 @@ static const gchar *key_auto_reconnect     = "auto_reconnect";
 static const gchar *key_grab_focus         = "grab_focus";
 static const gchar *key_extended_frequency = "extended_frequency";
 static const gchar *key_tef668x_mode       = "tef668x_mode";
+static const gchar *group_audio_bridge      = "audio_bridge";
+static const gchar *key_audio_bridge_enabled = "enabled";
+static const gchar *key_audio_bridge_input   = "input_id";
+static const gchar *key_audio_bridge_output  = "output_id";
 static const gchar *key_hide_decorations   = "hide_decorations";
 static const gchar *key_hide_interference  = "hide_interference";
 static const gchar *key_hide_radiotext     = "hide_radiotext";
@@ -252,6 +256,11 @@ conf_read()
     conf.extended_frequency = conf_read_boolean(keyfile, group_interface, key_extended_frequency, CONF_INTERFACE_EXTENDED_FREQUENCY);
     conf.tef668x_mode       = conf_read_boolean(keyfile, group_interface, key_tef668x_mode,       CONF_INTERFACE_TEF668X_MODE);
 
+    /* Audio bridge */
+    conf.audio_bridge_enabled    = conf_read_boolean(keyfile, group_audio_bridge, key_audio_bridge_enabled, CONF_AUDIO_BRIDGE_ENABLED);
+    conf.audio_bridge_input_id   = conf_read_string (keyfile, group_audio_bridge, key_audio_bridge_input,   CONF_AUDIO_BRIDGE_INPUT_ID);
+    conf.audio_bridge_output_id  = conf_read_string (keyfile, group_audio_bridge, key_audio_bridge_output,  CONF_AUDIO_BRIDGE_OUTPUT_ID);
+
     /* Interface (second part) */
     conf.hide_decorations   = conf_read_boolean(keyfile, group_interface, key_hide_decorations,   CONF_INTERFACE_HIDE_DECORATIONS);
     conf.hide_interference  = conf_read_boolean(keyfile, group_interface, key_hide_interference,  CONF_INTERFACE_HIDE_INTERFERENCE);
@@ -412,6 +421,11 @@ conf_write()
     g_key_file_set_boolean(keyfile, group_interface, key_grab_focus,         conf.grab_focus);
     g_key_file_set_boolean(keyfile, group_interface, key_extended_frequency, conf.extended_frequency);
     g_key_file_set_boolean(keyfile, group_interface, key_tef668x_mode,       conf.tef668x_mode);
+
+    /* Audio bridge */
+    g_key_file_set_boolean(keyfile, group_audio_bridge, key_audio_bridge_enabled, conf.audio_bridge_enabled);
+    g_key_file_set_string (keyfile, group_audio_bridge, key_audio_bridge_input,   conf.audio_bridge_input_id  ? conf.audio_bridge_input_id  : "");
+    g_key_file_set_string (keyfile, group_audio_bridge, key_audio_bridge_output,  conf.audio_bridge_output_id ? conf.audio_bridge_output_id : "");
 
     /* Interface (appearance) */
     g_key_file_set_boolean(keyfile, group_interface, key_hide_decorations,   conf.hide_decorations);

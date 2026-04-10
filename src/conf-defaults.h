@@ -50,6 +50,11 @@
 #define CONF_INTERFACE_EXTENDED_FREQUENCY  FALSE
 #define CONF_INTERFACE_TEF668X_MODE        FALSE
 
+/* Audio bridge */
+#define CONF_AUDIO_BRIDGE_ENABLED   FALSE
+#define CONF_AUDIO_BRIDGE_INPUT_ID  ""
+#define CONF_AUDIO_BRIDGE_OUTPUT_ID ""
+
 /* Signal */
 #define CONF_SIGNAL_OFFSET            0.0
 #define CONF_SIGNAL_UNIT              UNIT_DBF

@@ -3,6 +3,8 @@ cmake_minimum_required(VERSION 3.6)
 set(SOURCE_FILES
         antpatt.c
         antpatt.h
+        audio_bridge.c
+        audio_bridge.h
         conf.c
         conf.h
         conf-defaults.h
@@ -62,7 +64,11 @@ set(LIBRARIES
 
 set(LIBRARIES_MINGW
         ws2_32
-        gdi32)
+        gdi32
+        ole32
+        oleaut32
+        uuid
+        avrt)
 
 if(MINGW)
     IF(NOT (CMAKE_BUILD_TYPE MATCHES Debug))

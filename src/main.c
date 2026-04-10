@@ -21,6 +21,7 @@
 #include "stationlist.h"
 #include "log.h"
 #include "fonts.h"
+#include "audio_bridge.h"
 #include "resources.h"
 #ifdef G_OS_WIN32
 #include "win32.h"
@@ -62,6 +63,7 @@ main(gint   argc,
 #ifdef G_OS_WIN32
     win32_init();
 #endif
+    audio_bridge_init();
     conf_init(get_config_path(argc, argv));
 
     g_object_set(gtk_settings_get_default(),
@@ -77,6 +79,7 @@ main(gint   argc,
         stationlist_init();
 
     gtk_main();
+    audio_bridge_shutdown();
     log_cleanup();
 #ifdef G_OS_WIN32
     win32_cleanup();

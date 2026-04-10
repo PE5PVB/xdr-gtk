@@ -11,6 +11,7 @@
 #include "version.h"
 #include "log.h"
 #include "rds-utils.h"
+#include "audio_bridge.h"
 
 #define PEAK_HOLD_SAMPLES 4
 #define UPDATE_TIMEOUT 2000
@@ -765,8 +766,12 @@ update_service(gpointer user_data)
         g_signal_handlers_unblock_by_func(G_OBJECT(ui.c_bw), GINT_TO_POINTER(tuner_set_bandwidth), NULL);
     }
 
-    /* Volume */
-    if(lround(gtk_scale_button_get_value(GTK_SCALE_BUTTON(ui.volume))) != tuner.volume &&
+    /* Volume — when the audio bridge is active the slider controls the
+       bridge's per-stream volume instead of the radio, so we must NOT
+       overwrite the slider with tuner.volume (which would still report
+       whatever the radio's actual volume is, typically 100). */
+    if(!audio_bridge_is_running() &&
+       lround(gtk_scale_button_get_value(GTK_SCALE_BUTTON(ui.volume))) != tuner.volume &&
        (current_time - tuner.last_set_volume > UPDATE_TIMEOUT))
     {
         g_signal_handlers_block_by_func(G_OBJECT(ui.volume), GINT_TO_POINTER(tuner_set_volume), NULL);

@@ -11,6 +11,7 @@
 #include "settings.h"
 #include "stationlist.h"
 #include "tuner.h"
+#include "audio_bridge.h"
 #ifdef G_OS_WIN32
 #include "win32.h"
 #endif
@@ -79,6 +80,23 @@ static GtkWidget *x_stationlist, *l_stationlist_port, *s_stationlist_port;
 static GtkWidget *x_rds_logging, *x_replace;
 static GtkWidget *l_log_dir, *c_log_dir_dialog, *c_log_dir;
 static GtkWidget *l_screen_dir, *c_screen_dir_dialog, *c_screen_dir;
+
+/* Audio Bridge page */
+static GtkWidget *page_audio_bridge;
+static GtkWidget *grid_audio_bridge;
+static GtkWidget *x_audio_bridge_enabled;
+static GtkWidget *l_audio_bridge_input, *c_audio_bridge_input, *b_audio_bridge_input_refresh;
+static GtkWidget *l_audio_bridge_output, *c_audio_bridge_output, *b_audio_bridge_output_refresh;
+static GtkWidget *l_audio_bridge_info;
+static GtkWidget *l_audio_bridge_status;
+static guint      audio_bridge_status_timer = 0;
+static GList     *audio_bridge_input_devices = NULL;
+static GList     *audio_bridge_output_devices = NULL;
+
+static void settings_audio_bridge_populate(GtkComboBoxText *combo, GList **list_out, gboolean input, const gchar *select_id);
+static void settings_audio_bridge_refresh_input(GtkButton *btn, gpointer data);
+static void settings_audio_bridge_refresh_output(GtkButton *btn, gpointer data);
+static gboolean settings_audio_bridge_status_tick(gpointer data);
 
 /* Keyboard page */
 static GtkWidget *page_key;
@@ -803,6 +821,81 @@ settings_dialog(gint tab_num)
     gtk_file_chooser_set_action(GTK_FILE_CHOOSER(c_screen_dir_dialog), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER); /* HACK */
     gtk_grid_attach(GTK_GRID(grid_logs), c_screen_dir, 1, row, 1, 1);
 
+    /* Audio Bridge page */
+    page_audio_bridge = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_container_set_border_width(GTK_CONTAINER(page_audio_bridge), 4);
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), page_audio_bridge, gtk_label_new("Audio Bridge"));
+    gtk_container_child_set(GTK_CONTAINER(notebook), page_audio_bridge, "tab-expand", FALSE, "tab-fill", FALSE, NULL);
+
+    grid_audio_bridge = gtk_grid_new();
+    gtk_grid_set_row_homogeneous(GTK_GRID(grid_audio_bridge), FALSE);
+    gtk_grid_set_row_spacing(GTK_GRID(grid_audio_bridge), 4);
+    gtk_grid_set_column_spacing(GTK_GRID(grid_audio_bridge), 6);
+    gtk_container_add(GTK_CONTAINER(page_audio_bridge), GTK_WIDGET(grid_audio_bridge));
+
+    row = 0;
+    x_audio_bridge_enabled = gtk_check_button_new_with_label("Enable audio bridge while connected to the radio");
+    gtk_widget_set_tooltip_text(x_audio_bridge_enabled,
+        "Routes audio from the chosen input sound card to the chosen output sound card.\n"
+        "Only active while the radio connection is open.");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(x_audio_bridge_enabled), conf.audio_bridge_enabled);
+    gtk_grid_attach(GTK_GRID(grid_audio_bridge), x_audio_bridge_enabled, 0, row, 3, 1);
+
+    row++;
+    l_audio_bridge_input = gtk_label_new("Input device:");
+    gtk_label_set_xalign(GTK_LABEL(l_audio_bridge_input), 0.0);
+    gtk_grid_attach(GTK_GRID(grid_audio_bridge), l_audio_bridge_input, 0, row, 1, 1);
+
+    c_audio_bridge_input = gtk_combo_box_text_new();
+    gtk_widget_set_hexpand(c_audio_bridge_input, TRUE);
+    settings_audio_bridge_populate(GTK_COMBO_BOX_TEXT(c_audio_bridge_input),
+                                   &audio_bridge_input_devices, TRUE,
+                                   conf.audio_bridge_input_id);
+    gtk_grid_attach(GTK_GRID(grid_audio_bridge), c_audio_bridge_input, 1, row, 1, 1);
+
+    b_audio_bridge_input_refresh = gtk_button_new_from_icon_name("view-refresh", GTK_ICON_SIZE_BUTTON);
+    gtk_widget_set_tooltip_text(b_audio_bridge_input_refresh, "Re-scan input devices");
+    g_signal_connect(b_audio_bridge_input_refresh, "clicked",
+                     G_CALLBACK(settings_audio_bridge_refresh_input), NULL);
+    gtk_grid_attach(GTK_GRID(grid_audio_bridge), b_audio_bridge_input_refresh, 2, row, 1, 1);
+
+    row++;
+    l_audio_bridge_output = gtk_label_new("Output device:");
+    gtk_label_set_xalign(GTK_LABEL(l_audio_bridge_output), 0.0);
+    gtk_grid_attach(GTK_GRID(grid_audio_bridge), l_audio_bridge_output, 0, row, 1, 1);
+
+    c_audio_bridge_output = gtk_combo_box_text_new();
+    gtk_widget_set_hexpand(c_audio_bridge_output, TRUE);
+    settings_audio_bridge_populate(GTK_COMBO_BOX_TEXT(c_audio_bridge_output),
+                                   &audio_bridge_output_devices, FALSE,
+                                   conf.audio_bridge_output_id);
+    gtk_grid_attach(GTK_GRID(grid_audio_bridge), c_audio_bridge_output, 1, row, 1, 1);
+
+    b_audio_bridge_output_refresh = gtk_button_new_from_icon_name("view-refresh", GTK_ICON_SIZE_BUTTON);
+    gtk_widget_set_tooltip_text(b_audio_bridge_output_refresh, "Re-scan output devices");
+    g_signal_connect(b_audio_bridge_output_refresh, "clicked",
+                     G_CALLBACK(settings_audio_bridge_refresh_output), NULL);
+    gtk_grid_attach(GTK_GRID(grid_audio_bridge), b_audio_bridge_output_refresh, 2, row, 1, 1);
+
+    row++;
+    l_audio_bridge_status = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(l_audio_bridge_status), 0.0);
+    gtk_label_set_line_wrap(GTK_LABEL(l_audio_bridge_status), TRUE);
+    gtk_widget_set_margin_top(l_audio_bridge_status, 8);
+    gtk_grid_attach(GTK_GRID(grid_audio_bridge), l_audio_bridge_status, 0, row, 3, 1);
+    /* Initial render + 500 ms polling timer; the timer is removed in the
+       dialog destroy paths below. */
+    settings_audio_bridge_status_tick(NULL);
+    audio_bridge_status_timer = g_timeout_add(500, settings_audio_bridge_status_tick, NULL);
+
+    row++;
+    l_audio_bridge_info = gtk_label_new(
+        "Tip: both devices must use the same sample rate, channel count and bit depth\n"
+        "in Windows Sound settings, otherwise the bridge will refuse to start.");
+    gtk_label_set_xalign(GTK_LABEL(l_audio_bridge_info), 0.0);
+    gtk_label_set_line_wrap(GTK_LABEL(l_audio_bridge_info), TRUE);
+    gtk_grid_attach(GTK_GRID(grid_audio_bridge), l_audio_bridge_info, 0, row, 3, 1);
+
     /* Keyboard page */
     page_key = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(page_key), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
@@ -1121,6 +1214,16 @@ settings_dialog(gint tab_num)
 #endif
     if(i != GTK_RESPONSE_ACCEPT)
     {
+        audio_bridge_device_list_free(audio_bridge_input_devices);
+        audio_bridge_input_devices = NULL;
+        audio_bridge_device_list_free(audio_bridge_output_devices);
+        audio_bridge_output_devices = NULL;
+        if (audio_bridge_status_timer)
+        {
+            g_source_remove(audio_bridge_status_timer);
+            audio_bridge_status_timer = 0;
+        }
+        l_audio_bridge_status = NULL;
         gtk_widget_destroy(dialog);
         return;
     }
@@ -1285,6 +1388,46 @@ settings_dialog(gint tab_num)
     conf.key_scan_next = gdk_keyval_from_name(gtk_button_get_label(GTK_BUTTON(b_key_scan_next)));
     conf.key_stereo_toggle = gdk_keyval_from_name(gtk_button_get_label(GTK_BUTTON(b_key_stereo_toggle)));
     conf.key_mode_toggle = gdk_keyval_from_name(gtk_button_get_label(GTK_BUTTON(b_key_mode_toggle)));
+
+    /* Audio Bridge page */
+    conf.audio_bridge_enabled = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(x_audio_bridge_enabled));
+    {
+        gint sel_in  = gtk_combo_box_get_active(GTK_COMBO_BOX(c_audio_bridge_input));
+        gint sel_out = gtk_combo_box_get_active(GTK_COMBO_BOX(c_audio_bridge_output));
+        const gchar *new_in  = NULL;
+        const gchar *new_out = NULL;
+        if (sel_in >= 0)
+        {
+            audio_bridge_device_t *d = g_list_nth_data(audio_bridge_input_devices, sel_in);
+            if (d) new_in = d->id;
+        }
+        if (sel_out >= 0)
+        {
+            audio_bridge_device_t *d = g_list_nth_data(audio_bridge_output_devices, sel_out);
+            if (d) new_out = d->id;
+        }
+        conf_update_string_const(&conf.audio_bridge_input_id,  new_in  ? new_in  : "");
+        conf_update_string_const(&conf.audio_bridge_output_id, new_out ? new_out : "");
+    }
+    audio_bridge_device_list_free(audio_bridge_input_devices);
+    audio_bridge_input_devices = NULL;
+    audio_bridge_device_list_free(audio_bridge_output_devices);
+    audio_bridge_output_devices = NULL;
+    if (audio_bridge_status_timer)
+    {
+        g_source_remove(audio_bridge_status_timer);
+        audio_bridge_status_timer = 0;
+    }
+    l_audio_bridge_status = NULL;
+    audio_bridge_apply_state();
+    if (audio_bridge_get_status() == AUDIO_BRIDGE_ERROR && audio_bridge_get_last_error())
+    {
+        ui_dialog(GTK_WIDGET(ui.window),
+                  GTK_MESSAGE_WARNING,
+                  "Audio Bridge",
+                  "%s",
+                  audio_bridge_get_last_error());
+    }
 
     /* Presets page */
     {
@@ -1491,6 +1634,97 @@ settings_freq_offset_changed(GtkWidget *widget,
                              gpointer   data)
 {
     settings_freq_offset_apply();
+}
+
+static void
+settings_audio_bridge_populate(GtkComboBoxText *combo,
+                               GList          **list_out,
+                               gboolean         input,
+                               const gchar     *select_id)
+{
+    if (*list_out)
+    {
+        audio_bridge_device_list_free(*list_out);
+        *list_out = NULL;
+    }
+    gtk_combo_box_text_remove_all(combo);
+
+    *list_out = audio_bridge_enumerate_devices(input);
+
+    gint sel_index = -1;
+    gint idx = 0;
+    for (GList *l = *list_out; l; l = l->next, idx++)
+    {
+        audio_bridge_device_t *d = l->data;
+        gtk_combo_box_text_append_text(combo, d->name);
+        if (select_id && d->id && g_strcmp0(select_id, d->id) == 0)
+            sel_index = idx;
+    }
+    if (sel_index >= 0)
+        gtk_combo_box_set_active(GTK_COMBO_BOX(combo), sel_index);
+}
+
+static void
+settings_audio_bridge_refresh_input(GtkButton *btn, gpointer data)
+{
+    const gchar *current = NULL;
+    gint sel = gtk_combo_box_get_active(GTK_COMBO_BOX(c_audio_bridge_input));
+    if (sel >= 0)
+    {
+        audio_bridge_device_t *d = g_list_nth_data(audio_bridge_input_devices, sel);
+        if (d) current = d->id;
+    }
+    gchar *kept = g_strdup(current ? current : "");
+    settings_audio_bridge_populate(GTK_COMBO_BOX_TEXT(c_audio_bridge_input),
+                                   &audio_bridge_input_devices, TRUE, kept);
+    g_free(kept);
+}
+
+static void
+settings_audio_bridge_refresh_output(GtkButton *btn, gpointer data)
+{
+    const gchar *current = NULL;
+    gint sel = gtk_combo_box_get_active(GTK_COMBO_BOX(c_audio_bridge_output));
+    if (sel >= 0)
+    {
+        audio_bridge_device_t *d = g_list_nth_data(audio_bridge_output_devices, sel);
+        if (d) current = d->id;
+    }
+    gchar *kept = g_strdup(current ? current : "");
+    settings_audio_bridge_populate(GTK_COMBO_BOX_TEXT(c_audio_bridge_output),
+                                   &audio_bridge_output_devices, FALSE, kept);
+    g_free(kept);
+}
+
+static gboolean
+settings_audio_bridge_status_tick(gpointer data)
+{
+    if (!l_audio_bridge_status)
+        return G_SOURCE_REMOVE;
+
+    audio_bridge_status_t s = audio_bridge_get_status();
+    const gchar *err = audio_bridge_get_last_error();
+    gchar *markup = NULL;
+
+    switch (s)
+    {
+    case AUDIO_BRIDGE_RUNNING:
+        markup = g_strdup("<b>Status:</b> <span foreground=\"#30d158\">running</span>");
+        break;
+    case AUDIO_BRIDGE_ERROR:
+        markup = g_markup_printf_escaped(
+            "<b>Status:</b> <span foreground=\"#ff453a\">error</span>\n%s",
+            err ? err : "(unknown error)");
+        break;
+    case AUDIO_BRIDGE_STOPPED:
+    default:
+        markup = g_strdup("<b>Status:</b> <span foreground=\"#98989d\">stopped</span>");
+        break;
+    }
+
+    gtk_label_set_markup(GTK_LABEL(l_audio_bridge_status), markup);
+    g_free(markup);
+    return G_SOURCE_CONTINUE;
 }
 
 static void

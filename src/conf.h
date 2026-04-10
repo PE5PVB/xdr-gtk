@@ -92,6 +92,11 @@ typedef struct settings
     gboolean extended_frequency;
     gboolean tef668x_mode;
 
+    /* Audio bridge */
+    gboolean audio_bridge_enabled;
+    gchar *audio_bridge_input_id;
+    gchar *audio_bridge_output_id;
+
     /* Graph */
     gdouble signal_offset;
     enum Signal_Unit signal_unit;
