@@ -1,0 +1,28 @@
+{
+  "cmake.generator": "MSYS Makefiles",
+  "cmake.sourceDirectory": "${workspaceFolder}",
+  "cmake.buildDirectory": "${workspaceFolder}/build",
+  "cmake.configureOnOpen": true,
+  "cmake.environment": {
+    "PATH": "C:\\msys64\\ucrt64\\bin;C:\\msys64\\usr\\bin;${env:PATH}",
+    "PKG_CONFIG_PATH": "C:\\msys64\\ucrt64\\lib\\pkgconfig"
+  },
+  "cmake.configureEnvironment": {
+    "PATH": "C:\\msys64\\ucrt64\\bin;C:\\msys64\\usr\\bin;${env:PATH}",
+    "PKG_CONFIG_PATH": "C:\\msys64\\ucrt64\\lib\\pkgconfig"
+  },
+  "cmake.buildEnvironment": {
+    "PATH": "C:\\msys64\\ucrt64\\bin;C:\\msys64\\usr\\bin;${env:PATH}"
+  },
+  "cmake.configureArgs": [
+    "-DCMAKE_C_COMPILER=C:/msys64/ucrt64/bin/gcc.exe"
+  ],
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "files.associations": {
+    "*.h": "c",
+    "*.c": "c"
+  },
+  "terminal.integrated.env.windows": {
+    "PATH": "C:\\msys64\\ucrt64\\bin;C:\\msys64\\usr\\bin;${env:PATH}"
+  }
+}

@@ -1,0 +1,98 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "CMake: configure (MinGW Release)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "-G", "MSYS Makefiles",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_C_COMPILER=C:/msys64/ucrt64/bin/gcc.exe",
+        ".."
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/build",
+        "env": {
+          "PATH": "C:\\msys64\\ucrt64\\bin;C:\\msys64\\usr\\bin;${env:PATH}",
+          "PKG_CONFIG_PATH": "C:\\msys64\\ucrt64\\lib\\pkgconfig"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: configure (MinGW Debug)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "-G", "MSYS Makefiles",
+        "-DCMAKE_BUILD_TYPE=Debug",
+        "-DCMAKE_C_COMPILER=C:/msys64/ucrt64/bin/gcc.exe",
+        ".."
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/build",
+        "env": {
+          "PATH": "C:\\msys64\\ucrt64\\bin;C:\\msys64\\usr\\bin;${env:PATH}",
+          "PKG_CONFIG_PATH": "C:\\msys64\\ucrt64\\lib\\pkgconfig"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Build",
+      "type": "shell",
+      "command": "mingw32-make",
+      "args": ["-j"],
+      "options": {
+        "cwd": "${workspaceFolder}/build",
+        "env": {
+          "PATH": "C:\\msys64\\ucrt64\\bin;C:\\msys64\\usr\\bin;${env:PATH}"
+        }
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$gcc"],
+      "statusbar": {
+        "label": "$(tools) Build",
+        "tooltip": "Build xdr-gtk (mingw32-make -j)",
+        "color": "#7CB342"
+      }
+    },
+    {
+      "label": "Run",
+      "type": "shell",
+      "command": "./xdr-gtk.exe",
+      "options": {
+        "cwd": "${workspaceFolder}/build/src",
+        "env": {
+          "PATH": "C:\\msys64\\ucrt64\\bin;${env:PATH}"
+        }
+      },
+      "problemMatcher": [],
+      "statusbar": {
+        "label": "$(play) Run",
+        "tooltip": "Run xdr-gtk.exe"
+      }
+    },
+    {
+      "label": "Clean",
+      "type": "shell",
+      "command": "mingw32-make",
+      "args": ["clean"],
+      "options": {
+        "cwd": "${workspaceFolder}/build",
+        "env": {
+          "PATH": "C:\\msys64\\ucrt64\\bin;C:\\msys64\\usr\\bin;${env:PATH}"
+        }
+      },
+      "problemMatcher": [],
+      "statusbar": {
+        "label": "$(trash) Clean",
+        "tooltip": "make clean"
+      }
+    }
+  ]
+}
