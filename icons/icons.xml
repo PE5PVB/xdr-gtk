@@ -17,6 +17,13 @@
         <file>icons/32x32/apps/xdr-gtk.png</file>
         <file>icons/48x48/apps/xdr-gtk.png</file>
         <file>icons/scalable/apps/xdr-gtk.svg</file>
+        <file>fonts/JetBrainsMono-ExtraLight.ttf</file>
+        <file>fonts/JetBrainsMono-Light.ttf</file>
+        <file>fonts/JetBrainsMono-Regular.ttf</file>
+        <file>fonts/JetBrainsMono-Medium.ttf</file>
+        <file>fonts/Inter-Regular.ttf</file>
+        <file>fonts/Inter-Medium.ttf</file>
+        <file>fonts/Inter-Bold.ttf</file>
     </gresource>
 </gresources>
 

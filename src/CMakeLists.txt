@@ -6,6 +6,8 @@ set(SOURCE_FILES
         conf.c
         conf.h
         conf-defaults.h
+        fonts.c
+        fonts.h
         log.c
         log.h
         main.c
@@ -59,7 +61,8 @@ set(LIBRARIES
         m)
 
 set(LIBRARIES_MINGW
-        ws2_32)
+        ws2_32
+        gdi32)
 
 if(MINGW)
     IF(NOT (CMAKE_BUILD_TYPE MATCHES Debug))
