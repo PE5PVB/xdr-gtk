@@ -716,7 +716,11 @@ void tuner_clear_rds()
 
 gint tuner_get_freq()
 {
-    return tuner.freq - tuner.offset[tuner.antenna];
+    gint global;
+    if (tuner.freq <= 0)
+        return tuner.freq;
+    global = (conf.freq_offset_enabled ? conf.freq_offset : 0);
+    return tuner.freq - tuner.offset[tuner.antenna] + global;
 }
 
 gint tuner_get_offset()

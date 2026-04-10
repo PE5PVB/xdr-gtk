@@ -18,6 +18,11 @@
 #define TUNER_FREQ_MIN 100
 #define TUNER_FREQ_MAX 200000
 
+/* Range used for spinbuttons that may show offset-adjusted (displayed) values
+   when a frequency converter offset is configured. */
+#define TUNER_DISPLAY_FREQ_MIN -100000000
+#define TUNER_DISPLAY_FREQ_MAX  100000000
+
 typedef struct signal_data
 {
     gfloat   level;

@@ -51,7 +51,7 @@ scheduler_stop()
 static gboolean
 scheduler_switch(gpointer data)
 {
-    tuner_set_frequency(conf.scheduler_freqs[scheduler_next]);
+    tuner_set_frequency(conf.scheduler_freqs[scheduler_next] + (conf.freq_offset_enabled ? conf.freq_offset : 0));
     scheduler_id = g_timeout_add(conf.scheduler_timeouts[scheduler_next]*1000, scheduler_switch, NULL);
     scheduler_next = (scheduler_next + 1)%conf.scheduler_n;
     return FALSE;

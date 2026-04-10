@@ -34,6 +34,8 @@ static const gchar *key_ifgain             = "ifgain";
 static const gchar *key_agc                = "agc";
 static const gchar *key_deemphasis         = "deemphasis";
 static const gchar *key_initial_freq       = "initial_freq";
+static const gchar *key_freq_offset_enabled = "freq_offset_enabled";
+static const gchar *key_freq_offset        = "freq_offset";
 static const gchar *key_event_action       = "event_action";
 static const gchar *key_utc                = "utc";
 static const gchar *key_fm_10k_steps       = "fm_10k_steps";
@@ -236,8 +238,10 @@ conf_read()
     conf.deemphasis = conf_read_integer(keyfile, group_tuner, key_deemphasis, CONF_TUNER_DEEMPHASIS);
 
     /* Interface (first part) */
-    conf.initial_freq       = conf_read_integer(keyfile, group_interface, key_initial_freq,       CONF_INTERFACE_INITIAL_FREQ);
-    conf.event_action       = conf_read_integer(keyfile, group_interface, key_event_action,       CONF_INTERFACE_EVENT_ACTION);
+    conf.initial_freq       = conf_read_integer(keyfile, group_interface, key_initial_freq,        CONF_INTERFACE_INITIAL_FREQ);
+    conf.freq_offset_enabled= conf_read_boolean(keyfile, group_interface, key_freq_offset_enabled, CONF_INTERFACE_FREQ_OFFSET_ENABLED);
+    conf.freq_offset        = conf_read_integer(keyfile, group_interface, key_freq_offset,         CONF_INTERFACE_FREQ_OFFSET);
+    conf.event_action       = conf_read_integer(keyfile, group_interface, key_event_action,        CONF_INTERFACE_EVENT_ACTION);
     conf.utc                = conf_read_boolean(keyfile, group_interface, key_utc,                CONF_INTERFACE_UTC);
     conf.fm_10k_steps       = conf_read_boolean(keyfile, group_interface, key_fm_10k_steps,       CONF_INTERFACE_FM_10K_STEPS);
     conf.mw_10k_steps       = conf_read_boolean(keyfile, group_interface, key_mw_10k_steps,       CONF_INTERFACE_MW_10K_STEPS);
@@ -395,8 +399,10 @@ conf_write()
     g_key_file_set_integer(keyfile, group_tuner, key_deemphasis, conf.deemphasis);
 
     /* Interface */
-    g_key_file_set_integer(keyfile, group_interface, key_initial_freq,       conf.initial_freq);
-    g_key_file_set_integer(keyfile, group_interface, key_event_action,       conf.event_action);
+    g_key_file_set_integer(keyfile, group_interface, key_initial_freq,        conf.initial_freq);
+    g_key_file_set_boolean(keyfile, group_interface, key_freq_offset_enabled, conf.freq_offset_enabled);
+    g_key_file_set_integer(keyfile, group_interface, key_freq_offset,         conf.freq_offset);
+    g_key_file_set_integer(keyfile, group_interface, key_event_action,        conf.event_action);
     g_key_file_set_boolean(keyfile, group_interface, key_utc,                conf.utc);
     g_key_file_set_boolean(keyfile, group_interface, key_fm_10k_steps,       conf.fm_10k_steps);
     g_key_file_set_boolean(keyfile, group_interface, key_mw_10k_steps,       conf.mw_10k_steps);

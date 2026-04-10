@@ -134,14 +134,15 @@ keyboard_press(GtkWidget   *widget,
     if(event->keyval >= GDK_KEY_F1 && event->keyval <= GDK_KEY_F12)
     {
         gint id = event->keyval-GDK_KEY_F1;
+        gint global = (conf.freq_offset_enabled ? conf.freq_offset : 0);
         if(shift_pressed)
         {
-            conf.presets[id] = tuner_get_freq();
+            conf.presets[id] = tuner_get_freq() - global;
             ui_status(1500, "Preset <b>F%d</b> has been stored.", id+1);
         }
         else
         {
-            tuner_set_frequency(conf.presets[id]);
+            tuner_set_frequency(conf.presets[id] + global);
         }
         return TRUE;
     }

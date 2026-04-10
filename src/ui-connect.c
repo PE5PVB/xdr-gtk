@@ -429,7 +429,7 @@ connection_dialog_callback(gpointer userdata)
         tuner_set_squelch();
         tuner_set_mode(tuner.mode);
         tuner_set_antenna();
-        tuner_set_frequency(conf.initial_freq);
+        tuner_set_frequency(conf.initial_freq + (conf.freq_offset_enabled ? conf.freq_offset : 0));
         tuner_set_agc();
         tuner_set_bandwidth();
         tuner_set_deemphasis();

@@ -18,6 +18,9 @@ tuner_set_frequency(gint freq)
     gint real_freq;
     gint ant;
 
+    if (conf.freq_offset_enabled)
+        freq -= conf.freq_offset;
+
     ant = ui_antenna_id(freq);
     real_freq = freq + tuner.offset[ant];
 
@@ -38,7 +41,8 @@ tuner_set_frequency(gint freq)
 void
 tuner_set_frequency_prev()
 {
-    tuner_set_frequency(tuner.prevfreq - tuner.offset[tuner.prevantenna]);
+    gint global = (conf.freq_offset_enabled ? conf.freq_offset : 0);
+    tuner_set_frequency(tuner.prevfreq - tuner.offset[tuner.prevantenna] + global);
 }
 
 void

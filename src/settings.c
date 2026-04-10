@@ -20,10 +20,15 @@
 
 static GtkWidget *dialog, *notebook;
 
+/* Tracks the offset value currently reflected in the dialog's freq spinbuttons,
+   so we can shift them by the delta when the user toggles or edits the offset. */
+static gint settings_applied_offset;
+
 /* Interface page */
 static GtkWidget *page_interface;
 static GtkWidget *grid_interface;
 static GtkWidget *l_init_freq, *s_init_freq, *l_init_freq_unit;
+static GtkWidget *x_freq_offset, *s_freq_offset, *l_freq_offset_unit;
 static GtkWidget *l_event, *c_event;
 static GtkWidget *x_utc, *x_autoconnect, *x_fmstep, *x_amstep;
 static GtkWidget *x_disconnect_confirm, *x_auto_reconnect, *x_grab_focus;
@@ -121,6 +126,9 @@ static GtkWidget *xdr_gtk_copyright, *xdr_gtk_link;
 
 static void settings_key(GtkWidget*, GdkEventButton*, gpointer);
 static gboolean settings_key_press(GtkWidget*, GdkEventKey*, gpointer);
+static void settings_freq_offset_changed(GtkWidget*, gpointer);
+static void settings_freq_offset_apply(void);
+static void settings_freq_offset_shift(gint);
 static void settings_scheduler_load();
 static void settings_scheduler_store();
 static gboolean settings_scheduler_store_foreach(GtkTreeModel*, GtkTreePath*, GtkTreeIter*, gpointer*);
@@ -170,16 +178,36 @@ settings_dialog(gint tab_num)
     gtk_grid_set_column_spacing(GTK_GRID(grid_interface), 4);
     gtk_container_add(GTK_CONTAINER(page_interface), GTK_WIDGET(grid_interface));
 
+    settings_applied_offset = (conf.freq_offset_enabled ? conf.freq_offset : 0);
+
     row = 0;
     l_init_freq = gtk_label_new("Initial frequency:");
     gtk_label_set_xalign(GTK_LABEL(l_init_freq), 0.0);
     gtk_grid_attach(GTK_GRID(grid_interface), l_init_freq, 0, row, 1, 1);
 
-    s_init_freq = gtk_spin_button_new(GTK_ADJUSTMENT(gtk_adjustment_new(conf.initial_freq, TUNER_FREQ_MIN, TUNER_FREQ_MAX, 100.0, 200.0, 0.0)), 0, 0);
+    s_init_freq = gtk_spin_button_new(GTK_ADJUSTMENT(gtk_adjustment_new(conf.initial_freq + settings_applied_offset, TUNER_DISPLAY_FREQ_MIN, TUNER_DISPLAY_FREQ_MAX, 100.0, 200.0, 0.0)), 0, 0);
     gtk_grid_attach(GTK_GRID(grid_interface), s_init_freq, 1, row, 1, 1);
 
     l_init_freq_unit = gtk_label_new("kHz");
     gtk_grid_attach(GTK_GRID(grid_interface), l_init_freq_unit, 2, row, 1, 1);
+
+    row++;
+    x_freq_offset = gtk_check_button_new_with_label("Frequency offset:");
+    gtk_widget_set_tooltip_text(x_freq_offset, "Add a fixed offset to the displayed frequency (e.g. for a frequency converter).");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(x_freq_offset), conf.freq_offset_enabled);
+    gtk_grid_attach(GTK_GRID(grid_interface), x_freq_offset, 0, row, 1, 1);
+
+    s_freq_offset = gtk_spin_button_new(GTK_ADJUSTMENT(gtk_adjustment_new(conf.freq_offset, -20000000.0, 20000000.0, 100.0, 1000.0, 0.0)), 0, 0);
+    gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(s_freq_offset), TRUE);
+    gtk_widget_set_sensitive(s_freq_offset, conf.freq_offset_enabled);
+    gtk_grid_attach(GTK_GRID(grid_interface), s_freq_offset, 1, row, 1, 1);
+
+    l_freq_offset_unit = gtk_label_new("kHz");
+    gtk_widget_set_sensitive(l_freq_offset_unit, conf.freq_offset_enabled);
+    gtk_grid_attach(GTK_GRID(grid_interface), l_freq_offset_unit, 2, row, 1, 1);
+
+    g_signal_connect(x_freq_offset, "toggled", G_CALLBACK(settings_freq_offset_changed), NULL);
+    g_signal_connect(s_freq_offset, "value-changed", G_CALLBACK(settings_freq_offset_changed), NULL);
 
     row++;
     l_event = gtk_label_new("External event:");
@@ -977,7 +1005,7 @@ settings_dialog(gint tab_num)
     {
         g_snprintf(tmp, sizeof(tmp), "F%d:", i+1);
         gtk_grid_attach(GTK_GRID(grid_presets), gtk_label_new(tmp), (i>=6)?2:0, i%6, 1, 1);
-        s_presets[i] = gtk_spin_button_new(GTK_ADJUSTMENT(gtk_adjustment_new(conf.presets[i], TUNER_FREQ_MIN, TUNER_FREQ_MAX, 100.0, 200.0, 0.0)), 0, 0);
+        s_presets[i] = gtk_spin_button_new(GTK_ADJUSTMENT(gtk_adjustment_new(conf.presets[i] + settings_applied_offset, TUNER_DISPLAY_FREQ_MIN, TUNER_DISPLAY_FREQ_MAX, 100.0, 200.0, 0.0)), 0, 0);
         gtk_grid_attach(GTK_GRID(grid_presets), s_presets[i], (i>=6)?3:1, i%6, 1, 1);
     }
 
@@ -1019,7 +1047,7 @@ settings_dialog(gint tab_num)
     gtk_widget_set_hexpand(scheduler_add_box, TRUE);
     gtk_box_pack_start(GTK_BOX(page_scheduler), scheduler_add_box, FALSE, FALSE, 0);
 
-    s_scheduler_freq = gtk_spin_button_new(GTK_ADJUSTMENT(gtk_adjustment_new(87500.0, TUNER_FREQ_MIN, TUNER_FREQ_MAX, 100.0, 200.0, 0.0)), 0, 0);
+    s_scheduler_freq = gtk_spin_button_new(GTK_ADJUSTMENT(gtk_adjustment_new(87500.0, TUNER_DISPLAY_FREQ_MIN, TUNER_DISPLAY_FREQ_MAX, 100.0, 200.0, 0.0)), 0, 0);
     gtk_widget_set_tooltip_text(s_scheduler_freq, "Frequency [kHz]");
     g_signal_connect(s_scheduler_freq, "key-press-event", G_CALLBACK(settings_scheduler_add_key), NULL);
     gtk_box_pack_start(GTK_BOX(scheduler_add_box), s_scheduler_freq, FALSE, FALSE, 0);
@@ -1082,6 +1110,8 @@ settings_dialog(gint tab_num)
     gtk_label_set_justify(GTK_LABEL(xdr_gtk_copyright), GTK_JUSTIFY_CENTER);
     gtk_box_pack_start(GTK_BOX(page_about), xdr_gtk_copyright, TRUE, FALSE, 5);
 
+    settings_freq_offset_apply();
+
     gtk_widget_show_all(dialog);
     gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook), tab_num);
 #ifdef G_OS_WIN32
@@ -1096,7 +1126,14 @@ settings_dialog(gint tab_num)
     }
 
     /* Interface page */
-    conf.initial_freq = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(s_init_freq));
+    /* Save the frequency offset first so subsequent freq fields can be
+       converted from displayed (with offset) back to raw (without). */
+    conf.freq_offset_enabled = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(x_freq_offset));
+    conf.freq_offset = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(s_freq_offset));
+    {
+        gint global_now = (conf.freq_offset_enabled ? conf.freq_offset : 0);
+        conf.initial_freq = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(s_init_freq)) - global_now;
+    }
     conf.event_action = gtk_combo_box_get_active(GTK_COMBO_BOX(c_event));
     conf.utc = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(x_utc));
     conf.auto_connect = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(x_autoconnect));
@@ -1250,8 +1287,11 @@ settings_dialog(gint tab_num)
     conf.key_mode_toggle = gdk_keyval_from_name(gtk_button_get_label(GTK_BUTTON(b_key_mode_toggle)));
 
     /* Presets page */
-    for(i=0; i<PRESETS; i++)
-        conf.presets[i] = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(s_presets[i]));
+    {
+        gint global_now = (conf.freq_offset_enabled ? conf.freq_offset : 0);
+        for(i=0; i<PRESETS; i++)
+            conf.presets[i] = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(s_presets[i])) - global_now;
+    }
 
     /* Scheduler page */
     settings_scheduler_store();
@@ -1321,11 +1361,12 @@ settings_scheduler_load()
 {
     GtkTreeIter iter;
     int i;
+    gint global = (conf.freq_offset_enabled ? conf.freq_offset : 0);
     for(i=0; i<conf.scheduler_n; i++)
     {
         gtk_list_store_append(scheduler_liststore, &iter);
         gtk_list_store_set(scheduler_liststore, &iter,
-                           SCHEDULER_LIST_STORE_FREQ, conf.scheduler_freqs[i],
+                           SCHEDULER_LIST_STORE_FREQ, conf.scheduler_freqs[i] + global,
                            SCHEDULER_LIST_STORE_TIMEOUT, conf.scheduler_timeouts[i],
                            -1);
     }
@@ -1357,10 +1398,12 @@ settings_scheduler_store_foreach(GtkTreeModel *model,
                                  gpointer     *data)
 {
     gint *i = (gint*)data;
+    gint global = (conf.freq_offset_enabled ? conf.freq_offset : 0);
     gtk_tree_model_get(model, iter,
                        SCHEDULER_LIST_STORE_FREQ, &conf.scheduler_freqs[*i],
                        SCHEDULER_LIST_STORE_TIMEOUT, &conf.scheduler_timeouts[*i],
                        -1);
+    conf.scheduler_freqs[*i] -= global;
     (*i)++;
     return FALSE;
 }
@@ -1389,7 +1432,7 @@ settings_scheduler_edit(GtkCellRendererText *cell,
     gint new_value = atoi(new_text);
     gint column = GPOINTER_TO_INT(col);
 
-    if(column == SCHEDULER_LIST_STORE_FREQ && (new_value < TUNER_FREQ_MIN || new_value > TUNER_FREQ_MAX))
+    if(column == SCHEDULER_LIST_STORE_FREQ && (new_value < TUNER_DISPLAY_FREQ_MIN || new_value > TUNER_DISPLAY_FREQ_MAX))
         return;
     if(column == SCHEDULER_LIST_STORE_TIMEOUT && new_value < 1)
         return;
@@ -1441,4 +1484,68 @@ settings_scheduler_add_key_idle(gpointer ptr)
 {
     gtk_button_clicked(GTK_BUTTON(ptr));
     return FALSE;
+}
+
+static void
+settings_freq_offset_changed(GtkWidget *widget,
+                             gpointer   data)
+{
+    settings_freq_offset_apply();
+}
+
+static void
+settings_freq_offset_apply(void)
+{
+    gboolean enabled = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(x_freq_offset));
+    gint new_active = enabled ? gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(s_freq_offset)) : 0;
+    gint delta = new_active - settings_applied_offset;
+
+    if (delta != 0)
+    {
+        settings_freq_offset_shift(delta);
+        settings_applied_offset = new_active;
+    }
+
+    gtk_widget_set_sensitive(s_freq_offset, enabled);
+    gtk_widget_set_sensitive(l_freq_offset_unit, enabled);
+
+    if (enabled)
+    {
+        /* The frequency offset feature requires extended tuning, since the
+           displayed frequency typically falls outside the regular FM band. */
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(x_extended_frequency), TRUE);
+        gtk_widget_set_sensitive(x_extended_frequency, FALSE);
+    }
+    else
+    {
+        gtk_widget_set_sensitive(x_extended_frequency, TRUE);
+    }
+}
+
+static void
+settings_freq_offset_shift(gint delta)
+{
+    GtkTreeIter iter;
+    gboolean valid;
+    gint v;
+    gint i;
+
+    v = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(s_init_freq));
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(s_init_freq), (gdouble)(v + delta));
+
+    for (i = 0; i < PRESETS; i++)
+    {
+        v = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(s_presets[i]));
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(s_presets[i]), (gdouble)(v + delta));
+    }
+
+    valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(scheduler_liststore), &iter);
+    while (valid)
+    {
+        gtk_tree_model_get(GTK_TREE_MODEL(scheduler_liststore), &iter,
+                           SCHEDULER_LIST_STORE_FREQ, &v, -1);
+        gtk_list_store_set(scheduler_liststore, &iter,
+                           SCHEDULER_LIST_STORE_FREQ, v + delta, -1);
+        valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(scheduler_liststore), &iter);
+    }
 }

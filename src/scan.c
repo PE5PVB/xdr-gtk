@@ -255,13 +255,16 @@ scan_dialog()
     gtk_label_set_xalign(GTK_LABEL(scan.l_from), 0.0);
     gtk_grid_attach(GTK_GRID(scan.grid), scan.l_from, 0, grid_pos, 1, 1);
 
-    scan.s_start = gtk_spin_button_new(GTK_ADJUSTMENT(gtk_adjustment_new(conf.scan_start, TUNER_FREQ_MIN, TUNER_FREQ_MAX, 100.0, 200.0, 0.0)), 0, 0);
-    gtk_grid_attach(GTK_GRID(scan.grid), scan.s_start, 1, grid_pos, 1, 1);
+    {
+        gint scan_global = (conf.freq_offset_enabled ? conf.freq_offset : 0);
+        scan.s_start = gtk_spin_button_new(GTK_ADJUSTMENT(gtk_adjustment_new(conf.scan_start + scan_global, TUNER_DISPLAY_FREQ_MIN, TUNER_DISPLAY_FREQ_MAX, 100.0, 200.0, 0.0)), 0, 0);
+        gtk_grid_attach(GTK_GRID(scan.grid), scan.s_start, 1, grid_pos, 1, 1);
 
-    scan.l_to = gtk_label_new("To:");
-    gtk_label_set_xalign(GTK_LABEL(scan.l_to), 0.0);
-    gtk_grid_attach(GTK_GRID(scan.grid), scan.l_to, 0, ++grid_pos, 1, 1);
-    scan.s_end = gtk_spin_button_new(GTK_ADJUSTMENT(gtk_adjustment_new(conf.scan_end, TUNER_FREQ_MIN, TUNER_FREQ_MAX, 100.0, 200.0, 0.0)), 0, 0);
+        scan.l_to = gtk_label_new("To:");
+        gtk_label_set_xalign(GTK_LABEL(scan.l_to), 0.0);
+        gtk_grid_attach(GTK_GRID(scan.grid), scan.l_to, 0, ++grid_pos, 1, 1);
+        scan.s_end = gtk_spin_button_new(GTK_ADJUSTMENT(gtk_adjustment_new(conf.scan_end + scan_global, TUNER_DISPLAY_FREQ_MIN, TUNER_DISPLAY_FREQ_MAX, 100.0, 200.0, 0.0)), 0, 0);
+    }
     gtk_grid_attach(GTK_GRID(scan.grid), scan.s_end, 1, grid_pos, 1, 1);
 
 
@@ -345,8 +348,11 @@ scan_destroy(GtkWidget *widget,
     conf.scan_continuous = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(scan.b_continuous));
     conf.scan_relative = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(scan.b_relative));
     conf.scan_peakhold = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(scan.b_peakhold));
-    conf.scan_start = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(scan.s_start));
-    conf.scan_end = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(scan.s_end));
+    {
+        gint scan_global = (conf.freq_offset_enabled ? conf.freq_offset : 0);
+        conf.scan_start = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(scan.s_start)) - scan_global;
+        conf.scan_end = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(scan.s_end)) - scan_global;
+    }
     conf.scan_step = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(scan.s_step));
     conf.scan_bw = gtk_combo_box_get_active(GTK_COMBO_BOX(scan.d_bw));
     gtk_widget_destroy(widget);
@@ -478,19 +484,24 @@ scan_toggle(GtkWidget *widget,
     }
     else
     {
-        start = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(scan.s_start));
-        stop = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(scan.s_end));
+        {
+            gint scan_global = (conf.freq_offset_enabled ? conf.freq_offset : 0);
+            gint disp_start = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(scan.s_start));
+            gint disp_stop = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(scan.s_end));
+            if (disp_stop < disp_start)
+            {
+                gint t = disp_start;
+                disp_start = disp_stop;
+                disp_stop = t;
+                gtk_spin_button_set_value(GTK_SPIN_BUTTON(scan.s_start), disp_start);
+                gtk_spin_button_set_value(GTK_SPIN_BUTTON(scan.s_end), disp_stop);
+            }
+            start = disp_start - scan_global;
+            stop = disp_stop - scan_global;
+        }
         step = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(scan.s_step));
         bw = gtk_combo_box_get_active(GTK_COMBO_BOX(scan.d_bw));
         continuous = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(scan.b_continuous));
-
-        if(stop < start)
-        {
-            gtk_spin_button_set_value(GTK_SPIN_BUTTON(scan.s_start), stop);
-            gtk_spin_button_set_value(GTK_SPIN_BUTTON(scan.s_end), start);
-            start = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(scan.s_start));
-            stop = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(scan.s_end));
-        }
 
         samples = (stop - start)/(gdouble)step;
         if(samples < SCAN_MIN_SAMPLES || samples > SCAN_MAX_SAMPLES)
@@ -589,13 +600,15 @@ scan_prev(GtkWidget *widget,
     GList *ptr;
     gint freq_min, freq_max, freq_curr;
     gint prev, last, value;
+    gint global;
 
     if(!scan.data)
         return;
 
+    global = (conf.freq_offset_enabled ? conf.freq_offset : 0);
     freq_min = scan.data->signals[0].freq;
     freq_max = scan.data->signals[scan.data->len-1].freq;
-    freq_curr = tuner_get_freq();
+    freq_curr = tuner_get_freq() - global; /* back to scan-internal coords */
     prev = 0;
     last = 0;
 
@@ -616,9 +629,9 @@ scan_prev(GtkWidget *widget,
     }
 
     if(prev)
-        tuner_set_frequency(prev);
+        tuner_set_frequency(prev + global);
     else if(last)
-        tuner_set_frequency(last);
+        tuner_set_frequency(last + global);
 }
 
 static void
@@ -628,13 +641,15 @@ scan_next(GtkWidget *widget,
     GList *ptr;
     gint freq_min, freq_max, freq_curr;
     gint next, first, value;
+    gint global;
 
     if(!scan.data)
         return;
 
+    global = (conf.freq_offset_enabled ? conf.freq_offset : 0);
     freq_min = scan.data->signals[0].freq;
     freq_max = scan.data->signals[scan.data->len-1].freq;
-    freq_curr = tuner_get_freq();
+    freq_curr = tuner_get_freq() - global;
     next = 0;
     first = 0;
 
@@ -654,9 +669,9 @@ scan_next(GtkWidget *widget,
     }
 
     if(next)
-        tuner_set_frequency(next);
+        tuner_set_frequency(next + global);
     else if(first)
-        tuner_set_frequency(first);
+        tuner_set_frequency(first + global);
 }
 
 static gboolean
@@ -1051,12 +1066,16 @@ scan_redraw(GtkWidget *widget,
     cairo_restore(cr);
 
     /* Mark currently tuned frequency */
-    if(conf.scan_mark_tuned &&
-       tuner.thread &&
-       tuner_get_freq() >= scan.data->signals[0].freq &&
-       tuner_get_freq() <= scan.data->signals[scan.data->len-1].freq)
     {
-        scan_draw_mark(cr, width, height, tuner_get_freq(), TRUE, &exts);
+        gint global = (conf.freq_offset_enabled ? conf.freq_offset : 0);
+        gint tuned_internal = tuner_get_freq() - global;
+        if(conf.scan_mark_tuned &&
+           tuner.thread &&
+           tuned_internal >= scan.data->signals[0].freq &&
+           tuned_internal <= scan.data->signals[scan.data->len-1].freq)
+        {
+            scan_draw_mark(cr, width, height, tuned_internal, TRUE, &exts);
+        }
     }
 
     if(scan.focus >= 0 && scan.focus < scan.data->len)
@@ -1297,7 +1316,10 @@ scan_click(GtkWidget      *widget,
         {
             scan.motion_tuning = TRUE;
             if(scan.focus >= 0 && scan.focus < scan.data->len)
-                tuner_set_frequency(scan.data->signals[scan.focus].freq);
+            {
+                gint global = (conf.freq_offset_enabled ? conf.freq_offset : 0);
+                tuner_set_frequency(scan.data->signals[scan.focus].freq + global);
+            }
         }
         else if(event->type == GDK_BUTTON_RELEASE && event->button == 1)
         {
@@ -1328,8 +1350,9 @@ scan_motion(GtkWidget      *widget,
         current_focus = round(x/(width/(gdouble)(scan.data->len - 1)));
         if(current_focus >= 0 && current_focus < scan.data->len)
         {
-            if(scan.motion_tuning && tuner_get_freq() != scan.data->signals[current_focus].freq)
-                tuner_set_frequency(scan.data->signals[current_focus].freq);
+            gint global = (conf.freq_offset_enabled ? conf.freq_offset : 0);
+            if(scan.motion_tuning && (tuner_get_freq() - global) != scan.data->signals[current_focus].freq)
+                tuner_set_frequency(scan.data->signals[current_focus].freq + global);
         }
         else
         {
@@ -1361,10 +1384,11 @@ scan_leave(GtkWidget *widget,
 static const gchar*
 scan_format_frequency(gint freq)
 {
-    static gchar buff[10];
+    static gchar buff[16];
     gint length, i;
+    gint global = (conf.freq_offset_enabled ? conf.freq_offset : 0);
 
-    g_snprintf(buff, sizeof(buff), "%.3f", freq/1000.0);
+    g_snprintf(buff, sizeof(buff), "%.3f", (freq + global) / 1000.0);
     length = strlen(buff);
 
     for(i=length-1; i>0; i--)
