@@ -1428,7 +1428,8 @@ ui_destroy()
 {
     if(tuner.thread)
     {
-        tuner_write(tuner.thread, "X");
+        if (conf.connection_mode != 2)
+            tuner_write(tuner.thread, "X");
         g_usleep(25000);
         tuner_thread_cancel(tuner.thread);
         g_usleep(25000);

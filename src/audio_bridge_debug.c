@@ -85,17 +85,10 @@ poll_tick(gpointer data)
     audio_bridge_debug_get(&s);
     gint64 wall = g_get_monotonic_time() / 1000;
 
-    gdouble cap_rate = 0.0, ren_rate = 0.0;
     gint cap_silent_pct = -1;  /* -1 means no data this tick */
     gint under_delta = 0;
     if (prev_valid)
     {
-        gint64 dt = wall - prev_wall_ms;
-        if (dt > 0)
-        {
-            cap_rate = (s.cap_events - prev.cap_events) * 1000.0 / (gdouble)dt;
-            ren_rate = (s.ren_events - prev.ren_events) * 1000.0 / (gdouble)dt;
-        }
         gint dframes = s.cap_frames - prev.cap_frames;
         gint dsilent = s.cap_frames_silent - prev.cap_frames_silent;
         if (dframes > 0)

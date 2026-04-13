@@ -7,6 +7,8 @@ set(SOURCE_FILES
         audio_bridge.h
         audio_bridge_debug.c
         audio_bridge_debug.h
+        audio_stream.c
+        audio_stream.h
         conf.c
         conf.h
         conf-defaults.h
@@ -62,6 +64,7 @@ set(SOURCE_FILES_MINGW
 set(LIBRARIES
         rdsparser_static
         ${GTK_LIBRARIES}
+        opus
         m)
 
 set(LIBRARIES_MINGW
@@ -74,7 +77,15 @@ set(LIBRARIES_MINGW
 
 if(MINGW)
     IF(NOT (CMAKE_BUILD_TYPE MATCHES Debug))
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mwindows")
+        # -mwindows           : GUI subsystem (no console)
+        # -static-libgcc      : avoid external libgcc_s_seh-1.dll dependency
+        # -Wl,-s              : strip symbols at link time (smaller PE, fewer
+        #                       artefacts that Defender's heuristics flag)
+        # -Wl,--no-insert-timestamp : reproducible build, slightly more
+        #                             reputation-friendly
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mwindows -static-libgcc")
+        set(CMAKE_EXE_LINKER_FLAGS
+            "${CMAKE_EXE_LINKER_FLAGS} -Wl,-s -Wl,--no-insert-timestamp")
     ENDIF()
     set(CMAKE_RC_COMPILER_INIT windres)
     ENABLE_LANGUAGE(RC)

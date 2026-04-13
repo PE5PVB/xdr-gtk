@@ -1092,6 +1092,7 @@ audio_bridge_apply_state(void)
 {
     gboolean want = conf.audio_bridge_enabled
                     && tuner.thread
+                    && conf.connection_mode != 2  /* webserver delivers audio over WS */
                     && conf.audio_bridge_input_id
                     && conf.audio_bridge_output_id
                     && *conf.audio_bridge_input_id

@@ -53,4 +53,16 @@ const gchar* tuner_ws_last_error(void);
 conn_t* conn_new(const gchar*, const gchar* port, const gchar*);
 conn_t* conn_new_ws(const gchar* url, const gchar* password);
 void conn_free(conn_t*);
+
+/* WebSocket client helpers shared with audio_stream. Work on GIOStream /
+   GCancellable pairs as set up by g_socket_client_connect_to_host. */
+gboolean stream_write_all(GOutputStream *out, const guchar *buf, gsize len, GCancellable *cancel);
+gboolean stream_read_all(GInputStream *in, guchar *buf, gsize len, GCancellable *cancel);
+gboolean ws_parse_url(const gchar *url, gchar **out_host, gchar **out_port,
+                      gchar **out_path, gboolean *out_tls);
+gboolean ws_send_masked_frame(gpointer iostream, GCancellable *cancel,
+                              guchar opcode, const guchar *payload, gsize len);
+gint     ws_read_frame(gpointer iostream, GCancellable *cancel,
+                       guchar **out_buf, gsize *out_len, guchar *out_op);
+gchar*   ws_read_http_response(GIOStream *stream, GCancellable *cancel);
 #endif

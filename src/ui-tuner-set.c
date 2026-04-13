@@ -6,6 +6,7 @@
 #include "conf.h"
 #include "stationlist.h"
 #include "audio_bridge.h"
+#include "audio_stream.h"
 
 static void tuner_modify_frequency_full(guint, guint, guint);
 
@@ -92,11 +93,18 @@ tuner_set_volume()
     /* When the audio bridge is active, the slider controls the bridge's
        per-stream playback volume instead of the radio. The radio's volume
        is left untouched (whatever it was before the bridge started). */
+    if (audio_stream_is_running())
+    {
+        audio_stream_set_volume(conf.volume);
+        return;
+    }
     if (audio_bridge_is_running())
     {
         audio_bridge_set_volume(conf.volume);
         return;
     }
+    if (conf.connection_mode == 2)
+        return;  /* webserver: stream not up yet, don't spam Y commands to server */
 
     g_snprintf(buffer, sizeof(buffer), "Y%d", conf.volume);
     tuner_write(tuner.thread, buffer);

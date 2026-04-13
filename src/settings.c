@@ -13,6 +13,7 @@
 #include "tuner.h"
 #include "audio_bridge.h"
 #include "audio_bridge_debug.h"
+#include "audio_stream.h"
 #ifdef G_OS_WIN32
 #include "win32.h"
 #endif
@@ -1434,6 +1435,7 @@ settings_dialog(gint tab_num)
     }
     l_audio_bridge_status = NULL;
     audio_bridge_apply_state();
+    audio_stream_apply_state();
     if (audio_bridge_get_status() == AUDIO_BRIDGE_ERROR && audio_bridge_get_last_error())
     {
         ui_dialog(GTK_WIDGET(ui.window),

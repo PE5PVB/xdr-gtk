@@ -865,6 +865,7 @@ update_service(gpointer user_data)
        overwrite the slider with tuner.volume (which would still report
        whatever the radio's actual volume is, typically 100). */
     if(!audio_bridge_is_running() &&
+       conf.connection_mode != 2 &&
        lround(gtk_scale_button_get_value(GTK_SCALE_BUTTON(ui.volume))) != tuner.volume &&
        (current_time - tuner.last_set_volume > UPDATE_TIMEOUT))
     {

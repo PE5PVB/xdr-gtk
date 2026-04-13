@@ -18,7 +18,11 @@
           "PKG_CONFIG_PATH": "C:\\msys64\\ucrt64\\lib\\pkgconfig"
         }
       },
-      "problemMatcher": []
+      "problemMatcher": [],
+      "statusbar": {
+        "label": "$(gear) Configure",
+        "tooltip": "CMake configure (Release)"
+      }
     },
     {
       "label": "CMake: configure (MinGW Debug)",
@@ -41,8 +45,8 @@
     },
     {
       "label": "Build",
-      "type": "shell",
-      "command": "mingw32-make",
+      "type": "process",
+      "command": "C:\\msys64\\usr\\bin\\make.exe",
       "args": ["-j"],
       "options": {
         "cwd": "${workspaceFolder}/build",
@@ -79,8 +83,8 @@
     },
     {
       "label": "Clean",
-      "type": "shell",
-      "command": "mingw32-make",
+      "type": "process",
+      "command": "C:\\msys64\\usr\\bin\\make.exe",
       "args": ["clean"],
       "options": {
         "cwd": "${workspaceFolder}/build",

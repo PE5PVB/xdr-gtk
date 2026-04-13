@@ -6,6 +6,7 @@
 #include "tuner.h"
 #include "conf.h"
 #include "audio_bridge.h"
+#include "audio_stream.h"
 
 #include "rdsspy.h"
 
@@ -34,6 +35,7 @@ tuner_disconnect(gpointer data)
 
     rdsspy_reset();
     audio_bridge_apply_state();
+    audio_stream_apply_state();
     return FALSE;
 }
 

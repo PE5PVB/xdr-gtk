@@ -139,7 +139,11 @@ tuner_thread(gpointer data)
     if(thread->canceled)
         goto tuner_thread_cleanup;
 
-    tuner_write(thread, "x");
+    /* Wake-up / start command. In fm-dx-webserver mode the server already
+       has the tuner running; sending 'x' would needlessly disturb other
+       connected clients. */
+    if (conf.connection_mode != 2)
+        tuner_write(thread, "x");
 
     while(!thread->canceled)
     {
@@ -394,8 +398,11 @@ tuner_parse(gchar  c,
     }
     else if(c == 'Y')
     {
-        /* Sound volume control */
-        g_idle_add_full(CALLBACK_PRIORITY, tuner_volume, GINT_TO_POINTER(atoi(msg)), NULL);
+        /* Sound volume control — ignored in fm-dx-webserver mode where the
+           local audio stream's WASAPI session volume is the source of truth.
+           Accepting the server echo would fight the slider. */
+        if (conf.connection_mode != 2)
+            g_idle_add_full(CALLBACK_PRIORITY, tuner_volume, GINT_TO_POINTER(atoi(msg)), NULL);
     }
     else if(c == 'A')
     {

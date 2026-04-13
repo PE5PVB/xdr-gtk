@@ -231,14 +231,27 @@ conn_new(const gchar *hostname,
 /* Parse ws:// / http:// URL into host, port, path.
    Accepts: [ws|http|wss|https]://host[:port][/path]
    Returns FALSE on parse failure, sets *tls=TRUE for wss/https. */
-static gboolean
+gboolean
 ws_parse_url(const gchar *url,
              gchar **out_host,
              gchar **out_port,
              gchar **out_path,
              gboolean *out_tls)
 {
-    const gchar *p = url;
+    /* Normalize: trim leading/trailing whitespace, strip any query string
+       or fragment (?foo / #bar), and drop trailing slashes. fm-dx-webserver
+       URLs are commonly pasted as "https://host/?" which would otherwise
+       leave a bogus "/?" as our path. */
+    gchar *clean = g_strdup(url ? url : "");
+    g_strstrip(clean);
+    for (gchar *q = clean; *q; q++)
+    {
+        if (*q == '?' || *q == '#') { *q = '\0'; break; }
+    }
+    gsize clen = strlen(clean);
+    while (clen > 0 && clean[clen - 1] == '/') clean[--clen] = '\0';
+
+    const gchar *p = clean;
     gboolean tls = FALSE;
     if (g_ascii_strncasecmp(p, "wss://", 6) == 0)      { tls = TRUE;  p += 6; }
     else if (g_ascii_strncasecmp(p, "https://", 8) == 0){ tls = TRUE;  p += 8; }
@@ -270,8 +283,10 @@ ws_parse_url(const gchar *url,
     if (!**out_host)
     {
         g_free(*out_host); g_free(*out_port); g_free(*out_path);
+        g_free(clean);
         return FALSE;
     }
+    g_free(clean);
     return TRUE;
 }
 
@@ -333,7 +348,7 @@ static void ws_set_err(const gchar *s)
 
 /* ---------------- WebSocket client helpers (GIO stream based) ---------------- */
 
-static gboolean
+gboolean
 stream_write_all(GOutputStream *out,
                  const guchar  *buf,
                  gsize          len,
@@ -349,7 +364,7 @@ stream_write_all(GOutputStream *out,
     return TRUE;
 }
 
-static gboolean
+gboolean
 stream_read_all(GInputStream *in,
                 guchar       *buf,
                 gsize         len,
@@ -477,7 +492,7 @@ ws_read_frame(gpointer     iostream,
 }
 
 /* Read HTTP headers terminated by CRLFCRLF. Returns allocated string or NULL. */
-static gchar*
+gchar*
 ws_read_http_response(GIOStream *stream, GCancellable *cancel)
 {
     GInputStream *in = g_io_stream_get_input_stream(stream);
@@ -600,9 +615,22 @@ tuner_open_websocket(gpointer ptr)
         g_idle_add(connection_socket_callback, data);
         return NULL;
     }
-    gboolean ok = (strstr(resp, " 101 ") != NULL);
+    /* Parse HTTP status from the response line "HTTP/1.1 <code> <reason>" so
+       we can distinguish "no such path on this server" (404 → xdrgtk plugin
+       not active) from other upgrade rejections. */
+    gint http_code = 0;
+    {
+        const gchar *sp = strchr(resp, ' ');
+        if (sp) http_code = atoi(sp + 1);
+    }
+    gboolean ok = (http_code == 101);
     if (!ok)
+    {
         g_print("tuner_open_websocket: HTTP upgrade rejected:\n%s\n", resp);
+        /* Any non-101 response means the server is reachable but didn't
+           complete the xdrgtk WebSocket upgrade — treat uniformly. */
+        ws_set_err("Server has no XDRGTK support");
+    }
     g_free(resp);
     if (!ok)
     {

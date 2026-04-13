@@ -16,6 +16,7 @@
 #include "ui-tuner-set.h"
 #include "ui-signal.h"
 #include "audio_bridge.h"
+#include "audio_stream.h"
 
 static GtkWidget *dialog, *content;
 static GtkWidget *r_serial, *c_serial;
@@ -51,8 +52,11 @@ connection_toggle()
         connect_button(TRUE);
         if(!conf.disconnect_confirm || ui_dialog_confirm_disconnect())
         {
-            /* The tuner is connected, shutdown it */
-            tuner_write(tuner.thread, "X");
+            /* The tuner is connected, shutdown it. Skip the X (shutdown)
+               command in fm-dx-webserver mode — there it would shut the
+               tuner down for every other client too. */
+            if (conf.connection_mode != 2)
+                tuner_write(tuner.thread, "X");
             /* Lock the connection button until the thread ends */
             gtk_widget_set_sensitive(ui.b_connect, FALSE);
             g_usleep(100000);
@@ -486,6 +490,7 @@ connection_dialog_callback(gpointer userdata)
     gtk_widget_destroy(dialog);
 
     audio_bridge_apply_state();
+    audio_stream_apply_state();
 
     dialog_callback = 0;
     return G_SOURCE_REMOVE;
@@ -552,9 +557,14 @@ connection_socket_callback(gpointer ptr)
             break;
 
         case CONN_SOCKET_FAIL_UPGRADE:
-            connection_dialog_status("WebSocket upgrade failed (check URL/path).");
+        {
+            const gchar *det = tuner_ws_last_error();
+            connection_dialog_status(det && *det
+                ? det
+                : "WebSocket upgrade failed (check URL/path).");
             connection_dialog_unlock(TRUE);
             break;
+        }
 
         case CONN_SOCKET_FAIL_TLS:
         {
