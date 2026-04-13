@@ -19,3 +19,7 @@ build/resources.h
 build/compile_commands.json
 build/.cmake/
 build/*.exe
+
+# Stray compile artifacts
+*.o
+*.obj
