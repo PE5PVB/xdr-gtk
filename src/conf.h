@@ -59,6 +59,8 @@ typedef struct settings
     gchar **host;
     guint16 port;
     gchar *password;
+    gchar *webserver_url;
+    gint connection_mode; /* 0=serial, 1=tcp, 2=webserver */
 
     /* Tuner settings */
     gint volume;

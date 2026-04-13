@@ -66,4 +66,72 @@ void audio_bridge_apply_state(void);
 /* Returns TRUE while the bridge threads are actively routing audio. */
 gboolean audio_bridge_is_running(void);
 
+/* ----- Debug snapshot (used by the debug window) -----
+   All counters are cumulative since the last successful start; they reset
+   on each bridge start. Timestamps are in milliseconds (g_get_monotonic_time
+   divided by 1000) to make them easy to subtract. Safe to call from any
+   thread; values are read via g_atomic_int_get. */
+typedef struct audio_bridge_debug_snapshot
+{
+    audio_bridge_status_t status;
+    const gchar *last_error;   /* weak ref owned by the bridge */
+
+    gint cap_events;           /* capture_event wakeups that delivered data */
+    gint cap_frames;            /* frames pushed into the ring */
+    gint cap_frames_silent;     /* frames flagged AUDCLNT_BUFFERFLAGS_SILENT */
+    gint cap_last_ms;           /* ms timestamp of the last successful capture event */
+
+    gint ren_events;            /* render_event wakeups that produced output */
+    gint ren_frames;            /* frames consumed from the ring */
+    gint ren_underruns;         /* frames of silence padding on underrun */
+    gint ren_last_ms;           /* ms timestamp of the last successful render event */
+
+    gint drift_stretch;         /* count of "low_fill" frame duplications */
+    gint drift_skip;            /* count of "high_fill" frame drops */
+
+    gint restarts;              /* count of auto-restart attempts */
+
+    gint start_ms;              /* ms timestamp when the current run started */
+    gint now_ms;                /* ms timestamp at snapshot time */
+
+    gint ring_capacity;         /* bytes */
+    gint ring_fill;              /* bytes currently in the ring */
+
+    guint format_sample_rate;   /* 0 if not started */
+    guint format_channels;
+    guint format_bits;
+
+    /* 0..100 integer peak amplitude of the last packet seen by each thread.
+       Zero while no data has been processed yet, or genuinely silent audio. */
+    gint cap_peak;
+    gint ren_peak;
+
+    /* Max peak seen in the current poll window (reset by the snapshot).
+       These reveal whether the audio source is *continuously* quiet or
+       just has occasional silent packets mixed with loud ones. */
+    gint cap_peak_win_max;
+    gint ren_peak_win_max;
+
+    /* Peak computed by peeking at the ring's raw bytes at the read
+       position, just BEFORE ring_read consumes them. If this is > 0
+       while ren_peak is 0, the bug is in ring_read / drift-comp. If
+       both are 0, the ring genuinely contains zeros. */
+    gint ring_peek_peak_win_max;
+
+    /* Count of near-silent packets (peak <= 2) seen since the last
+       snapshot reset. Paired with total packet count gives us a "what
+       fraction of the stream was quiet" metric. */
+    gint cap_quiet_packets;
+    gint cap_total_packets;
+    gint ren_quiet_packets;
+    gint ren_total_packets;
+
+    /* Live read-back of the render stream's per-session volume / mute.
+       render_volume_pct is -1 if the query failed or the bridge isn't running. */
+    gint     render_volume_pct;
+    gboolean render_muted;
+} audio_bridge_debug_snapshot_t;
+
+void audio_bridge_debug_get(audio_bridge_debug_snapshot_t *out);
+
 #endif

@@ -1,4 +1,5 @@
 #include "audio_bridge.h"
+#include <string.h>
 
 #ifdef G_OS_WIN32
 
@@ -17,87 +18,19 @@
 #include "tuner.h"
 
 #define BRIDGE_BUFFER_MS    50    /* WASAPI buffer duration request */
-#define BRIDGE_RING_MS      300   /* ring buffer size in milliseconds */
-#define BRIDGE_PREFILL_MS   40    /* render starts once ring has this much audio */
+#define BRIDGE_QUEUE_MAX    60    /* drop oldest once more than this many packets queued (~600 ms @ 10 ms/packet) */
+#define BRIDGE_QUEUE_TARGET 30    /* when dropping, shrink down to this depth (~300 ms) */
 #define BRIDGE_LOG_PREFIX   "audio_bridge:"
 
-/* ----- Lock-free single-producer single-consumer ring buffer (bytes) -----
-   Uses GLib atomic ints for the head/tail indices so the producer (capture
-   thread) and consumer (render thread) don't race on a torn read. */
-
-typedef struct
-{
-    guint8 *data;
-    gint    capacity;
-    gint    write; /* accessed via g_atomic_int_* */
-    gint    read;  /* accessed via g_atomic_int_* */
-} ring_t;
-
-static gboolean
-ring_init(ring_t *r, gint capacity)
-{
-    r->data = g_malloc0(capacity);
-    r->capacity = capacity;
-    g_atomic_int_set(&r->write, 0);
-    g_atomic_int_set(&r->read, 0);
-    return r->data != NULL;
-}
-
-static void
-ring_free(ring_t *r)
-{
-    g_free(r->data);
-    r->data = NULL;
-    r->capacity = 0;
-    g_atomic_int_set(&r->write, 0);
-    g_atomic_int_set(&r->read, 0);
-}
-
-static gint
-ring_available_read(ring_t *r)
-{
-    gint w = g_atomic_int_get(&r->write);
-    gint rd = g_atomic_int_get(&r->read);
-    if (w >= rd)
-        return w - rd;
-    return r->capacity - (rd - w);
-}
-
-static gint
-ring_available_write(ring_t *r)
-{
-    return r->capacity - ring_available_read(r) - 1;
-}
-
-static gint
-ring_write(ring_t *r, const guint8 *src, gint n)
-{
-    gint avail = ring_available_write(r);
-    if (n > avail) n = avail;
-    gint w = g_atomic_int_get(&r->write);
-    gint first = r->capacity - w;
-    if (first > n) first = n;
-    memcpy(r->data + w, src, first);
-    if (n > first)
-        memcpy(r->data, src + first, n - first);
-    g_atomic_int_set(&r->write, (w + n) % r->capacity);
-    return n;
-}
-
-static gint
-ring_read(ring_t *r, guint8 *dst, gint n)
-{
-    gint avail = ring_available_read(r);
-    if (n > avail) n = avail;
-    gint rd = g_atomic_int_get(&r->read);
-    gint first = r->capacity - rd;
-    if (first > n) first = n;
-    memcpy(dst, r->data + rd, first);
-    if (n > first)
-        memcpy(dst + first, r->data, n - first);
-    g_atomic_int_set(&r->read, (rd + n) % r->capacity);
-    return n;
-}
+/* ----- Audio queue -----
+   Replaces the old lock-free ring buffer. Capture packets are allocated as
+   GByteArray and pushed onto a GAsyncQueue; the render thread pops them,
+   copies the samples into the WASAPI render buffer, and unrefs. If the
+   queue depth exceeds BRIDGE_QUEUE_MAX (producer is faster than consumer
+   due to clock drift or WASAPI backpressure) the oldest packets are
+   dropped down to BRIDGE_QUEUE_TARGET — that's our "drift compensation":
+   crude but guaranteed glitch-free for small drifts, and produces a
+   single small gap for large drifts instead of corrupting the stream. */
 
 /* ----- Bridge state ----- */
 
@@ -124,16 +57,71 @@ typedef struct
 
     WAVEFORMATEX    *format;
     UINT32           bytes_per_frame;
-    ring_t           ring;
+
+    /* Audio queue: GByteArray* packets, FIFO. Thread-safe via glib. */
+    GAsyncQueue     *audio_queue;
+    /* Render-thread private state: the packet currently being drained into
+       the WASAPI render buffer and how many bytes of it have been consumed
+       so far. Never touched from other threads. */
+    GByteArray      *render_current;
+    gsize            render_current_offset;
 
     /* Wide-string copies of the active device IDs, used to compare against
        hot-plug notifications which arrive as LPCWSTR. */
     LPWSTR           capture_id_w;
     LPWSTR           render_id_w;
+
+    /* ----- Debug counters (all updated via g_atomic_int_*) -----
+       These feed the debug window. Reset in bridge_start_internal, bumped
+       in the capture/render threads. The _ms timestamps are monotonic time
+       / 1000. */
+    gint dbg_cap_events;
+    gint dbg_cap_frames;
+    gint dbg_cap_frames_silent;
+    gint dbg_cap_last_ms;
+    gint dbg_ren_events;
+    gint dbg_ren_frames;
+    gint dbg_ren_underruns;
+    gint dbg_ren_last_ms;
+    gint dbg_drift_stretch;
+    gint dbg_drift_skip;
+    gint dbg_restarts;
+    gint dbg_start_ms;
+    gint dbg_cap_peak;   /* 0..100 from the last non-silent capture packet */
+    gint dbg_ren_peak;   /* 0..100 from the last render output buffer */
+
+    /* Per-window tracking (reset by the snapshot getter on each poll). */
+    gint dbg_cap_peak_win_max;
+    gint dbg_ren_peak_win_max;
+    gint dbg_ring_peek_peak_win_max;
+    gint dbg_cap_quiet_packets;
+    gint dbg_cap_total_packets;
+    gint dbg_ren_quiet_packets;
+    gint dbg_ren_total_packets;
 } bridge_state_t;
+
+/* Atomic max update: write new_value to *target iff it's greater than the
+   current value. Diagnostic helper; tiny race on reset is acceptable. */
+static inline void
+atomic_max(gint *target, gint new_value)
+{
+    gint cur;
+    do {
+        cur = g_atomic_int_get(target);
+        if (new_value <= cur) return;
+    } while (!g_atomic_int_compare_and_exchange(target, cur, new_value));
+}
 
 static bridge_state_t bridge;
 static gboolean       com_initialized = FALSE;
+
+/* Auto-recovery: when capture or render threads detect a WASAPI failure or
+   a prolonged event stall they post a main-loop idle to tear down and
+   re-start the bridge. restart_pending prevents duplicate posts, and the
+   timestamp provides a simple 2-second rate limit so a permanently broken
+   device can't spin forever. */
+static gint    restart_pending;      /* g_atomic_int_* */
+static gint64  last_restart_time;    /* g_get_monotonic_time() of last attempt */
 
 /* IMMNotificationClient implementation (manual COM-in-C vtable) so we can
    detect device removal / disable while the bridge is running. */
@@ -499,6 +487,128 @@ formats_match(const WAVEFORMATEX *a, const WAVEFORMATEX *b)
     return TRUE;
 }
 
+/* ----- Peak amplitude (diagnostic) -----
+   Walks a raw audio buffer and returns the peak sample value in the range
+   0..100 (integer percent of full scale). Supports 32-bit IEEE float and
+   16/32-bit PCM. Unknown formats return 0 rather than a bogus value. */
+
+static gint
+compute_peak_percent(const void *data, gsize bytes, const WAVEFORMATEX *fmt)
+{
+    if (!data || bytes == 0 || !fmt) return 0;
+
+    /* Extensible 32-bit is nearly always IEEE float on modern Windows, so
+       accept that without cracking open the SubFormat GUID. */
+    const gboolean is_float =
+        (fmt->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) ||
+        (fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE && fmt->wBitsPerSample == 32);
+
+    if (is_float && fmt->wBitsPerSample == 32)
+    {
+        const float *s = (const float*)data;
+        const gsize n = bytes / sizeof(float);
+        float p = 0.0f;
+        for (gsize i = 0; i < n; i++)
+        {
+            float v = s[i];
+            if (v < 0.0f) v = -v;
+            if (v > p) p = v;
+        }
+        if (p > 1.0f) p = 1.0f;
+        return (gint)(p * 100.0f + 0.5f);
+    }
+
+    if (fmt->wBitsPerSample == 16)
+    {
+        const gint16 *s = (const gint16*)data;
+        const gsize n = bytes / sizeof(gint16);
+        gint p = 0;
+        for (gsize i = 0; i < n; i++)
+        {
+            gint v = s[i];
+            if (v < 0) v = -v;
+            if (v > p) p = v;
+        }
+        return (gint)((gint64)p * 100 / 32768);
+    }
+
+    if (fmt->wBitsPerSample == 32)
+    {
+        const gint32 *s = (const gint32*)data;
+        const gsize n = bytes / sizeof(gint32);
+        gint32 p = 0;
+        for (gsize i = 0; i < n; i++)
+        {
+            gint32 v = s[i];
+            if (v < 0) v = -v;
+            if (v > p) p = v;
+        }
+        return (gint)((gint64)p * 100 / 2147483648LL);
+    }
+
+    return 0;
+}
+
+/* ----- Diagnostic queue peek -----
+   Called from the render thread only. Returns the peak of the packet
+   that render is about to play (the one currently in bridge.render_current).
+   When render has no current packet, returns 0. */
+
+static gint
+queue_peek_peak(const WAVEFORMATEX *fmt)
+{
+    if (!bridge.render_current) return 0;
+    if (bridge.render_current_offset >= bridge.render_current->len) return 0;
+    gsize len = bridge.render_current->len - bridge.render_current_offset;
+    const guint8 *data = bridge.render_current->data + bridge.render_current_offset;
+    if (len > 2048) len = 2048;
+    return compute_peak_percent(data, len, fmt);
+}
+
+/* Drain and free every queued packet. Safe to call on a NULL queue. */
+static void
+queue_drain(GAsyncQueue *q)
+{
+    if (!q) return;
+    GByteArray *pkt;
+    while ((pkt = g_async_queue_try_pop(q)) != NULL)
+        g_byte_array_unref(pkt);
+}
+
+/* ----- Auto-restart on WASAPI failure / stall ----- */
+
+static gboolean
+bridge_restart_idle(gpointer data)
+{
+    (void)data;
+    g_atomic_int_set(&restart_pending, 0);
+
+    if (!bridge.running)
+        return G_SOURCE_REMOVE;
+
+    g_message("%s restarting bridge (auto-recovery)", BRIDGE_LOG_PREFIX);
+    bridge_stop_internal();
+    audio_bridge_apply_state();
+    return G_SOURCE_REMOVE;
+}
+
+static void
+request_restart(const gchar *reason)
+{
+    gint64 now = g_get_monotonic_time();
+    /* Rate-limit to at most one restart attempt per 2 seconds. */
+    if (now - last_restart_time < 2000000)
+        return;
+    last_restart_time = now;
+
+    if (g_atomic_int_compare_and_exchange(&restart_pending, 0, 1))
+    {
+        g_atomic_int_inc(&bridge.dbg_restarts);
+        g_warning("%s auto-restart: %s", BRIDGE_LOG_PREFIX, reason);
+        g_idle_add(bridge_restart_idle, NULL);
+    }
+}
+
 /* ----- Capture / render threads ----- */
 
 static gpointer
@@ -506,44 +616,96 @@ capture_thread_fn(gpointer data)
 {
     DWORD task_index = 0;
     HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &task_index);
-    HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    (void)hr;
+    HRESULT hr_com = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    (void)hr_com;
+
+    gint timeout_count = 0;
 
     while (!g_atomic_int_get(&bridge.stop_request))
     {
         DWORD wait = WaitForSingleObject(bridge.capture_event, 200);
-        if (wait != WAIT_OBJECT_0) continue;
+        if (wait != WAIT_OBJECT_0)
+        {
+            /* 10 timeouts × 200ms = 2s without a capture event → stalled. */
+            if (++timeout_count > 10)
+            {
+                request_restart("capture stalled (no events)");
+                goto capture_exit;
+            }
+            continue;
+        }
+        timeout_count = 0;
+
+        g_atomic_int_inc(&bridge.dbg_cap_events);
+        g_atomic_int_set(&bridge.dbg_cap_last_ms,
+                         (gint)(g_get_monotonic_time() / 1000));
 
         UINT32 packet = 0;
-        while (SUCCEEDED(IAudioCaptureClient_GetNextPacketSize(bridge.capture_iface, &packet)) && packet > 0)
+        HRESULT hr;
+        while (SUCCEEDED(hr = IAudioCaptureClient_GetNextPacketSize(bridge.capture_iface, &packet)) && packet > 0)
         {
             BYTE  *audio = NULL;
             UINT32 frames = 0;
             DWORD  flags = 0;
-            if (FAILED(IAudioCaptureClient_GetBuffer(bridge.capture_iface, &audio, &frames, &flags, NULL, NULL)))
-                break;
+            HRESULT ghr = IAudioCaptureClient_GetBuffer(bridge.capture_iface, &audio, &frames, &flags, NULL, NULL);
+            if (FAILED(ghr))
+            {
+                log_hr("capture GetBuffer", ghr);
+                request_restart("capture GetBuffer failed");
+                goto capture_exit;
+            }
 
             gsize bytes = (gsize)frames * bridge.bytes_per_frame;
+            gint packet_peak;
+            GByteArray *arr = g_byte_array_sized_new((guint)bytes);
             if (flags & AUDCLNT_BUFFERFLAGS_SILENT)
             {
-                guint8 zeros[1024] = {0};
-                gsize remaining = bytes;
-                while (remaining > 0)
-                {
-                    gsize chunk = remaining > sizeof(zeros) ? sizeof(zeros) : remaining;
-                    ring_write(&bridge.ring, zeros, chunk);
-                    remaining -= chunk;
-                }
+                g_atomic_int_add(&bridge.dbg_cap_frames_silent, (gint)frames);
+                packet_peak = 0;
+                /* Append zeros of the right size so render pops a packet
+                   of the expected length. */
+                g_byte_array_set_size(arr, (guint)bytes);
+                memset(arr->data, 0, bytes);
             }
             else
             {
-                ring_write(&bridge.ring, (const guint8*)audio, bytes);
+                g_byte_array_append(arr, (const guint8*)audio, (guint)bytes);
+                packet_peak = compute_peak_percent(audio, bytes, bridge.format);
             }
+            g_async_queue_push(bridge.audio_queue, arr);
+
+            /* Drop oldest if queue grew past the upper bound (drift or
+               render stall). Shrink down to target depth in one go. */
+            if (g_async_queue_length(bridge.audio_queue) > BRIDGE_QUEUE_MAX)
+            {
+                while (g_async_queue_length(bridge.audio_queue) > BRIDGE_QUEUE_TARGET)
+                {
+                    GByteArray *old = g_async_queue_try_pop(bridge.audio_queue);
+                    if (!old) break;
+                    g_atomic_int_inc(&bridge.dbg_drift_skip);
+                    g_byte_array_unref(old);
+                }
+            }
+
+            g_atomic_int_set(&bridge.dbg_cap_peak, packet_peak);
+            atomic_max(&bridge.dbg_cap_peak_win_max, packet_peak);
+            g_atomic_int_inc(&bridge.dbg_cap_total_packets);
+            if (packet_peak <= 2)
+                g_atomic_int_inc(&bridge.dbg_cap_quiet_packets);
+            g_atomic_int_add(&bridge.dbg_cap_frames, (gint)frames);
 
             IAudioCaptureClient_ReleaseBuffer(bridge.capture_iface, frames);
         }
+
+        if (FAILED(hr))
+        {
+            log_hr("capture GetNextPacketSize", hr);
+            request_restart("capture GetNextPacketSize failed");
+            goto capture_exit;
+        }
     }
 
+capture_exit:
     if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
     CoUninitialize();
     return NULL;
@@ -560,30 +722,112 @@ render_thread_fn(gpointer data)
     UINT32 buffer_frames = 0;
     IAudioClient_GetBufferSize(bridge.render_client, &buffer_frames);
 
+    /* Drift is handled on the capture side (dropping oldest queued packets
+       when the queue grows past BRIDGE_QUEUE_MAX). The render side just
+       pops packets as WASAPI asks for output and pads with silence on
+       underrun. */
+    const gint bpf = bridge.bytes_per_frame;
+    gint timeout_count = 0;
+
     while (!g_atomic_int_get(&bridge.stop_request))
     {
         DWORD wait = WaitForSingleObject(bridge.render_event, 200);
-        if (wait != WAIT_OBJECT_0) continue;
+        if (wait != WAIT_OBJECT_0)
+        {
+            /* 10 timeouts × 200ms = 2s without a render event → stalled. */
+            if (++timeout_count > 10)
+            {
+                request_restart("render stalled (no events)");
+                goto render_exit;
+            }
+            continue;
+        }
+        timeout_count = 0;
 
         UINT32 padding = 0;
-        if (FAILED(IAudioClient_GetCurrentPadding(bridge.render_client, &padding)))
-            continue;
+        HRESULT hr = IAudioClient_GetCurrentPadding(bridge.render_client, &padding);
+        if (FAILED(hr))
+        {
+            log_hr("render GetCurrentPadding", hr);
+            request_restart("render GetCurrentPadding failed");
+            goto render_exit;
+        }
 
         UINT32 frames_available = buffer_frames - padding;
         if (frames_available == 0) continue;
 
         BYTE *out = NULL;
-        if (FAILED(IAudioRenderClient_GetBuffer(bridge.render_iface, frames_available, &out)))
-            continue;
+        hr = IAudioRenderClient_GetBuffer(bridge.render_iface, frames_available, &out);
+        if (FAILED(hr))
+        {
+            log_hr("render GetBuffer", hr);
+            request_restart("render GetBuffer failed");
+            goto render_exit;
+        }
 
-        gsize wanted = (gsize)frames_available * bridge.bytes_per_frame;
-        gsize got = ring_read(&bridge.ring, (guint8*)out, wanted);
+        g_atomic_int_inc(&bridge.dbg_ren_events);
+        g_atomic_int_set(&bridge.dbg_ren_last_ms,
+                         (gint)(g_get_monotonic_time() / 1000));
+
+        const gsize wanted = (gsize)frames_available * bpf;
+        gsize got;
+
+        /* Diagnostic: peek at the current packet before we consume it
+           further. If bridge.render_current is exhausted this returns 0. */
+        {
+            gint peek = queue_peek_peak(bridge.format);
+            atomic_max(&bridge.dbg_ring_peek_peak_win_max, peek);
+        }
+
+        /* Pop packets from the queue and copy into the WASAPI output buffer
+           until we've filled `wanted` bytes or the queue runs dry. */
+        got = 0;
+        while (got < wanted)
+        {
+            if (!bridge.render_current)
+            {
+                bridge.render_current = g_async_queue_try_pop(bridge.audio_queue);
+                bridge.render_current_offset = 0;
+                if (!bridge.render_current) break;
+            }
+            gsize available = bridge.render_current->len - bridge.render_current_offset;
+            gsize to_copy = wanted - got;
+            if (to_copy > available) to_copy = available;
+            memcpy((guint8*)out + got,
+                   bridge.render_current->data + bridge.render_current_offset,
+                   to_copy);
+            got += to_copy;
+            bridge.render_current_offset += to_copy;
+            if (bridge.render_current_offset >= bridge.render_current->len)
+            {
+                g_byte_array_unref(bridge.render_current);
+                bridge.render_current = NULL;
+                bridge.render_current_offset = 0;
+            }
+        }
+
+        g_atomic_int_add(&bridge.dbg_ren_frames, (gint)frames_available);
+
         if (got < wanted)
-            memset(out + got, 0, wanted - got); /* underrun: silence */
+        {
+            memset(out + got, 0, wanted - got); /* hard underrun */
+            g_atomic_int_add(&bridge.dbg_ren_underruns,
+                             (gint)((wanted - got) / (gsize)bpf));
+        }
+
+        {
+            gint pk = compute_peak_percent(out, wanted, bridge.format);
+            g_atomic_int_set(&bridge.dbg_ren_peak, pk);
+            atomic_max(&bridge.dbg_ren_peak_win_max, pk);
+            g_atomic_int_inc(&bridge.dbg_ren_total_packets);
+            if (pk <= 2)
+                g_atomic_int_inc(&bridge.dbg_ren_quiet_packets);
+        }
 
         IAudioRenderClient_ReleaseBuffer(bridge.render_iface, frames_available, 0);
     }
 
+render_exit:
     if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
     CoUninitialize();
     return NULL;
@@ -618,7 +862,18 @@ bridge_stop_internal(void)
     if (bridge.capture_id_w)  { g_free(bridge.capture_id_w);                       bridge.capture_id_w = NULL; }
     if (bridge.render_id_w)   { g_free(bridge.render_id_w);                        bridge.render_id_w = NULL; }
 
-    ring_free(&bridge.ring);
+    if (bridge.render_current)
+    {
+        g_byte_array_unref(bridge.render_current);
+        bridge.render_current = NULL;
+        bridge.render_current_offset = 0;
+    }
+    if (bridge.audio_queue)
+    {
+        queue_drain(bridge.audio_queue);
+        g_async_queue_unref(bridge.audio_queue);
+        bridge.audio_queue = NULL;
+    }
 
     bridge.running = FALSE;
     g_atomic_int_set(&bridge.stop_request, 0);
@@ -652,6 +907,23 @@ bridge_start_internal(void)
         set_error("No input or output device selected");
         return FALSE;
     }
+
+    /* Reset debug counters at the start of every run. The restart count is
+       preserved across auto-restarts (see request_restart). */
+    g_atomic_int_set(&bridge.dbg_cap_events, 0);
+    g_atomic_int_set(&bridge.dbg_cap_frames, 0);
+    g_atomic_int_set(&bridge.dbg_cap_frames_silent, 0);
+    g_atomic_int_set(&bridge.dbg_cap_last_ms, 0);
+    g_atomic_int_set(&bridge.dbg_ren_events, 0);
+    g_atomic_int_set(&bridge.dbg_ren_frames, 0);
+    g_atomic_int_set(&bridge.dbg_ren_underruns, 0);
+    g_atomic_int_set(&bridge.dbg_ren_last_ms, 0);
+    g_atomic_int_set(&bridge.dbg_drift_stretch, 0);
+    g_atomic_int_set(&bridge.dbg_drift_skip, 0);
+    g_atomic_int_set(&bridge.dbg_cap_peak, 0);
+    g_atomic_int_set(&bridge.dbg_ren_peak, 0);
+    g_atomic_int_set(&bridge.dbg_start_ms,
+                     (gint)(g_get_monotonic_time() / 1000));
 
     bridge.capture_device = open_device_by_id(conf.audio_bridge_input_id);
     if (!bridge.capture_device)
@@ -770,22 +1042,22 @@ bridge_start_internal(void)
         ISimpleAudioVolume_SetMute(bridge.render_volume, FALSE, NULL);
     }
 
-    /* Ring sized for ~BRIDGE_RING_MS of audio at the negotiated format */
-    gint ring_bytes = (gint)((bridge.format->nSamplesPerSec / 1000) * BRIDGE_RING_MS) * bridge.bytes_per_frame;
-    if (ring_bytes < 4096) ring_bytes = 4096;
-    if (!ring_init(&bridge.ring, ring_bytes)) { set_error("ring buffer alloc failed"); goto fail; }
+    /* Create the audio queue (empty; capture will start pushing packets). */
+    bridge.audio_queue = g_async_queue_new();
+    bridge.render_current = NULL;
+    bridge.render_current_offset = 0;
 
     g_atomic_int_set(&bridge.stop_request, 0);
 
-    /* Start capture first so the ring has data ready when render asks */
+    /* Start capture first so the queue has data ready when render asks. */
     hr = IAudioClient_Start(bridge.capture_client);
     if (FAILED(hr)) { set_error("capture Start failed (hr=0x%08lx)", (long)hr); goto fail; }
 
     bridge.capture_thread = g_thread_new("xdr-bridge-cap", capture_thread_fn, NULL);
 
-    /* Brief pre-fill so the render thread has audio waiting */
-    gint prefill_bytes = (gint)((bridge.format->nSamplesPerSec / 1000) * BRIDGE_PREFILL_MS) * bridge.bytes_per_frame;
-    for (int i = 0; i < 100 && ring_available_read(&bridge.ring) < prefill_bytes; i++)
+    /* Brief pre-fill so render has something to play on its first wakeup.
+       Wait until at least 10 packets (~100 ms) are queued, or up to 200 ms. */
+    for (int i = 0; i < 200 && g_async_queue_length(bridge.audio_queue) < 10; i++)
         Sleep(1);
 
     hr = IAudioClient_Start(bridge.render_client);
@@ -802,12 +1074,12 @@ bridge_start_internal(void)
     if (tuner.thread)
         tuner_write(tuner.thread, "Y100");
 
-    g_message("%s started: %u Hz, %u ch, %u bit, ring %d ms, wasapi %d ms",
+    g_message("%s started: %u Hz, %u ch, %u bit, queue max %d packets, wasapi %d ms",
               BRIDGE_LOG_PREFIX,
               (unsigned)bridge.format->nSamplesPerSec,
               bridge.format->nChannels,
               bridge.format->wBitsPerSample,
-              BRIDGE_RING_MS, BRIDGE_BUFFER_MS);
+              BRIDGE_QUEUE_MAX, BRIDGE_BUFFER_MS);
     return TRUE;
 
 fail:
@@ -867,6 +1139,81 @@ audio_bridge_set_volume(gint volume_0_100)
                                        NULL);
 }
 
+void
+audio_bridge_debug_get(audio_bridge_debug_snapshot_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+
+    out->status     = bridge.status;
+    out->last_error = bridge.last_error;
+
+    out->cap_events        = g_atomic_int_get(&bridge.dbg_cap_events);
+    out->cap_frames        = g_atomic_int_get(&bridge.dbg_cap_frames);
+    out->cap_frames_silent = g_atomic_int_get(&bridge.dbg_cap_frames_silent);
+    out->cap_last_ms       = g_atomic_int_get(&bridge.dbg_cap_last_ms);
+
+    out->ren_events   = g_atomic_int_get(&bridge.dbg_ren_events);
+    out->ren_frames   = g_atomic_int_get(&bridge.dbg_ren_frames);
+    out->ren_underruns= g_atomic_int_get(&bridge.dbg_ren_underruns);
+    out->ren_last_ms  = g_atomic_int_get(&bridge.dbg_ren_last_ms);
+
+    out->drift_stretch = g_atomic_int_get(&bridge.dbg_drift_stretch);
+    out->drift_skip    = g_atomic_int_get(&bridge.dbg_drift_skip);
+
+    out->restarts = g_atomic_int_get(&bridge.dbg_restarts);
+
+    out->start_ms = g_atomic_int_get(&bridge.dbg_start_ms);
+    out->now_ms   = (gint)(g_get_monotonic_time() / 1000);
+
+    /* "Ring" fields now report queue depth as a percentage of the
+       drop-oldest threshold so the debug window still shows a meaningful
+       number. Capacity = BRIDGE_QUEUE_MAX; fill = current depth. */
+    out->ring_capacity = BRIDGE_QUEUE_MAX;
+    out->ring_fill     = bridge.audio_queue ? g_async_queue_length(bridge.audio_queue) : 0;
+
+    if (bridge.format)
+    {
+        out->format_sample_rate = (guint)bridge.format->nSamplesPerSec;
+        out->format_channels    = bridge.format->nChannels;
+        out->format_bits        = bridge.format->wBitsPerSample;
+    }
+
+    out->cap_peak = g_atomic_int_get(&bridge.dbg_cap_peak);
+    out->ren_peak = g_atomic_int_get(&bridge.dbg_ren_peak);
+
+    /* Read-and-reset the per-window tracking counters so each snapshot
+       covers a fresh window. Tiny race with the worker threads is fine. */
+    out->cap_peak_win_max      = g_atomic_int_get(&bridge.dbg_cap_peak_win_max);
+    out->ren_peak_win_max      = g_atomic_int_get(&bridge.dbg_ren_peak_win_max);
+    out->ring_peek_peak_win_max= g_atomic_int_get(&bridge.dbg_ring_peek_peak_win_max);
+    out->cap_quiet_packets  = g_atomic_int_get(&bridge.dbg_cap_quiet_packets);
+    out->cap_total_packets  = g_atomic_int_get(&bridge.dbg_cap_total_packets);
+    out->ren_quiet_packets  = g_atomic_int_get(&bridge.dbg_ren_quiet_packets);
+    out->ren_total_packets  = g_atomic_int_get(&bridge.dbg_ren_total_packets);
+    g_atomic_int_set(&bridge.dbg_cap_peak_win_max, 0);
+    g_atomic_int_set(&bridge.dbg_ren_peak_win_max, 0);
+    g_atomic_int_set(&bridge.dbg_ring_peek_peak_win_max, 0);
+    g_atomic_int_set(&bridge.dbg_cap_quiet_packets, 0);
+    g_atomic_int_set(&bridge.dbg_cap_total_packets, 0);
+    g_atomic_int_set(&bridge.dbg_ren_quiet_packets, 0);
+    g_atomic_int_set(&bridge.dbg_ren_total_packets, 0);
+
+    /* Live read-back of the render session's volume / mute so we can spot
+       Windows (or another app) attenuating us behind our back. */
+    out->render_volume_pct = -1;
+    out->render_muted      = FALSE;
+    if (bridge.running && bridge.render_volume)
+    {
+        float vol = 0.0f;
+        if (SUCCEEDED(ISimpleAudioVolume_GetMasterVolume(bridge.render_volume, &vol)))
+            out->render_volume_pct = (gint)(vol * 100.0f + 0.5f);
+        BOOL muted = FALSE;
+        if (SUCCEEDED(ISimpleAudioVolume_GetMute(bridge.render_volume, &muted)))
+            out->render_muted = muted ? TRUE : FALSE;
+    }
+}
+
 #else /* !G_OS_WIN32 */
 
 void audio_bridge_init(void) {}
@@ -878,5 +1225,6 @@ gboolean audio_bridge_is_running(void) { return FALSE; }
 audio_bridge_status_t audio_bridge_get_status(void) { return AUDIO_BRIDGE_STOPPED; }
 const gchar* audio_bridge_get_last_error(void) { return NULL; }
 void audio_bridge_set_volume(gint volume_0_100) { (void)volume_0_100; }
+void audio_bridge_debug_get(audio_bridge_debug_snapshot_t *out) { if (out) memset(out, 0, sizeof(*out)); }
 
 #endif

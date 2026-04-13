@@ -1,4 +1,5 @@
 #include <math.h>
+#include <string.h>
 #include "ui.h"
 #include "tuner.h"
 #include "ui-tuner-set.h"
@@ -16,8 +17,68 @@
 #define PEAK_HOLD_SAMPLES 4
 #define UPDATE_TIMEOUT 2000
 
+#define LPS_SCROLL_INTERVAL_MS 300
+#define LPS_SCROLL_GAP         "   "
+#define LPS_WINDOW_CHARS       10
+
 static gboolean update_service(gpointer);
 static void service_update_rotator();
+
+static gchar *lps_cached = NULL;
+static guint  lps_pos = 0;
+static guint  lps_timer = 0;
+
+static gboolean
+lps_scroll_tick(gpointer user_data)
+{
+    if (lps_cached == NULL)
+    {
+        lps_timer = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    const gsize total = strlen(lps_cached);
+
+    if (total <= LPS_WINDOW_CHARS)
+    {
+        gtk_label_set_text(GTK_LABEL(ui.l_ps), lps_cached);
+        lps_timer = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    const gsize gap = strlen(LPS_SCROLL_GAP);
+    const gsize cycle = total + gap;
+    if (lps_pos >= cycle) lps_pos = 0;
+
+    gchar *doubled = g_strdup_printf("%s%s%s%s", lps_cached, LPS_SCROLL_GAP, lps_cached, LPS_SCROLL_GAP);
+    gchar window[LPS_WINDOW_CHARS + 1];
+    memcpy(window, doubled + lps_pos, LPS_WINDOW_CHARS);
+    window[LPS_WINDOW_CHARS] = '\0';
+    gtk_label_set_text(GTK_LABEL(ui.l_ps), window);
+    g_free(doubled);
+
+    lps_pos++;
+    return G_SOURCE_CONTINUE;
+}
+
+static void
+lps_stop(void)
+{
+    if (lps_timer)
+    {
+        g_source_remove(lps_timer);
+        lps_timer = 0;
+    }
+    g_free(lps_cached);
+    lps_cached = NULL;
+    lps_pos = 0;
+}
+
+static gboolean
+lps_is_active(void)
+{
+    return lps_cached != NULL;
+}
 
 void
 ui_update_freq()
@@ -542,6 +603,9 @@ ui_update_country()
 void
 ui_update_ps()
 {
+    if (lps_is_active())
+        return;
+
     if (!rdsparser_string_get_available(rdsparser_get_ps(tuner.rds)))
     {
         gtk_label_set_text(GTK_LABEL(ui.l_ps), " ");
@@ -554,6 +618,36 @@ ui_update_ps()
 
     gtk_label_set_markup(GTK_LABEL(ui.l_ps), markup);
     g_free(markup);
+}
+
+void
+ui_update_lps()
+{
+    const char *lps = rdsparser_get_lps(tuner.rds);
+
+    if (lps == NULL || *lps == '\0')
+    {
+        if (lps_is_active())
+        {
+            lps_stop();
+            ui_update_ps();
+        }
+        return;
+    }
+
+    if (lps_cached && strcmp(lps_cached, lps) == 0)
+        return;
+
+    g_free(lps_cached);
+    lps_cached = g_strdup(lps);
+    lps_pos = 0;
+
+    lps_scroll_tick(NULL);
+
+    if (strlen(lps_cached) > LPS_WINDOW_CHARS && lps_timer == 0)
+    {
+        lps_timer = g_timeout_add(LPS_SCROLL_INTERVAL_MS, lps_scroll_tick, NULL);
+    }
 }
 
 void

@@ -22,6 +22,8 @@ static GtkWidget *r_serial, *c_serial;
 static GtkWidget *r_tcp;
 static GtkWidget *box_tcp1, *l_host, *e_host, *l_port, *e_port;
 static GtkWidget *box_tcp2, *l_password, *e_password, *c_password;
+static GtkWidget *r_ws;
+static GtkWidget *box_ws, *l_ws_url, *e_ws_url;
 static GtkWidget *box_status_wrapper, *box_status, *spinner, *l_status;
 static GtkWidget *box_button, *b_connect, *b_cancel;
 static GtkListStore *ls_host;
@@ -161,6 +163,24 @@ connection_dialog(gboolean auto_connect)
     g_signal_connect(e_port, "changed", G_CALLBACK(connection_dialog_select), r_tcp);
     gtk_box_pack_start(GTK_BOX(box_tcp1), e_port, TRUE, FALSE, 1);
 
+    r_ws = gtk_radio_button_new_with_label_from_widget(GTK_RADIO_BUTTON(r_serial), "fm-dx-webserver");
+    gtk_box_pack_start(GTK_BOX(content), r_ws, TRUE, TRUE, 2);
+    box_ws = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    gtk_container_add(GTK_CONTAINER(content), box_ws);
+    l_ws_url = gtk_label_new("URL:");
+    gtk_box_pack_start(GTK_BOX(box_ws), l_ws_url, FALSE, FALSE, 1);
+    e_ws_url = gtk_entry_new();
+    gtk_entry_set_width_chars(GTK_ENTRY(e_ws_url), 30);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(e_ws_url), "ws://host:port/xdrgtk");
+    if(conf.webserver_url)
+        gtk_entry_set_text(GTK_ENTRY(e_ws_url), conf.webserver_url);
+    g_signal_connect(e_ws_url, "changed", G_CALLBACK(connection_dialog_select), r_ws);
+    gtk_box_pack_start(GTK_BOX(box_ws), e_ws_url, TRUE, TRUE, 1);
+
+    if(conf.connection_mode == 2)
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(r_ws), TRUE);
+
+    /* Shared password row — applies to both TCP/IP and fm-dx-webserver. */
     box_tcp2 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
     gtk_container_add(GTK_CONTAINER(content), box_tcp2);
     l_password = gtk_label_new("Password:");
@@ -169,14 +189,12 @@ connection_dialog(gboolean auto_connect)
     gtk_entry_set_width_chars(GTK_ENTRY(e_password), 20);
     gtk_entry_set_text(GTK_ENTRY(e_password), conf.password);
     gtk_entry_set_visibility(GTK_ENTRY(e_password), FALSE);
-    g_signal_connect(e_password, "changed", G_CALLBACK(connection_dialog_select), r_tcp);
     gtk_box_pack_start(GTK_BOX(box_tcp2), e_password, TRUE, TRUE, 1);
     c_password = gtk_check_button_new_with_label("Keep");
     if(conf.password && strlen(conf.password))
     {
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(c_password), TRUE);
     }
-    g_signal_connect(c_password, "toggled", G_CALLBACK(connection_dialog_select), r_tcp);
     gtk_box_pack_start(GTK_BOX(box_tcp2), c_password, FALSE, FALSE, 1);
 
     box_status_wrapper = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
@@ -282,6 +300,7 @@ connection_dialog_connect(GtkWidget *widget,
             g_snprintf(ui.window_title, 100, "%s / %s", APP_NAME, serial);
             conf_update_string_const(&conf.serial, serial);
             conf.network = FALSE;
+            conf.connection_mode = 0;
 
             result = tuner_open_serial(serial, &fd);
             if(result == CONN_SUCCESS)
@@ -291,6 +310,27 @@ connection_dialog_connect(GtkWidget *widget,
 
             g_free(serial);
         }
+    }
+    else if(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(r_ws)))
+    {
+        /* fm-dx-webserver (WebSocket tunnel) */
+        const gchar *url = gtk_entry_get_text(GTK_ENTRY(e_ws_url));
+        if(!url || !*url)
+            return;
+
+        connection_dialog_unlock(FALSE);
+        connecting = conn_new_ws(url, password);
+        g_snprintf(ui.window_title, 100, "%s / %s", APP_NAME, connecting->hostname);
+
+        conf_update_string_const(&conf.webserver_url, url);
+        conf.connection_mode = 2;
+        conf.network = TRUE;
+        if(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(c_password)))
+        {
+            conf_update_string_const(&conf.password, password);
+        }
+
+        g_thread_unref(g_thread_new("open_ws", tuner_open_websocket, connecting));
     }
     else if(strlen(hostname) && atoi(port) > 0)
     {
@@ -302,6 +342,7 @@ connection_dialog_connect(GtkWidget *widget,
         conf_add_host(hostname);
         conf.port = atoi(port);
         conf.network = TRUE;
+        conf.connection_mode = 1;
         if(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(c_password)))
         {
             conf_update_string_const(&conf.password, password);
@@ -331,6 +372,8 @@ connection_dialog_unlock(gboolean value)
     gtk_widget_set_sensitive(e_port, value);
     gtk_widget_set_sensitive(e_password, value);
     gtk_widget_set_sensitive(c_password, value);
+    gtk_widget_set_sensitive(r_ws, value);
+    gtk_widget_set_sensitive(e_ws_url, value);
     gtk_widget_set_sensitive(b_connect, value);
     if(!value)
     {
@@ -463,7 +506,24 @@ connection_socket_callback(gpointer ptr)
         switch(data->state)
         {
         case CONN_SUCCESS:
-            connection_dialog_connected(TUNER_THREAD_SOCKET, data->socketfd);
+            if (data->websocket)
+            {
+                /* Start the WEBSOCKET thread with the already-connected
+                   GIOStream + GCancellable; transfer ownership. */
+                gtk_window_set_title(GTK_WINDOW(ui.window), ui.window_title);
+                signal_clear();
+                connection_dialog_status("Waiting for tuner...");
+                gtk_widget_set_sensitive(ui.b_connect, FALSE);
+                wait_for_tuner = TRUE;
+                tuner.thread = tuner_thread_new_websocket(data->stream, data->cancel);
+                data->stream = NULL;
+                data->cancel = NULL;
+                dialog_callback = g_timeout_add(100, connection_dialog_callback, NULL);
+            }
+            else
+            {
+                connection_dialog_connected(TUNER_THREAD_SOCKET, data->socketfd);
+            }
             break;
 
         case CONN_SOCKET_FAIL_RESOLV:
@@ -485,6 +545,27 @@ connection_socket_callback(gpointer ptr)
             connection_dialog_status("Socket write error.");
             connection_dialog_unlock(TRUE);
             break;
+
+        case CONN_SOCKET_FAIL_URL:
+            connection_dialog_status("Invalid webserver URL.");
+            connection_dialog_unlock(TRUE);
+            break;
+
+        case CONN_SOCKET_FAIL_UPGRADE:
+            connection_dialog_status("WebSocket upgrade failed (check URL/path).");
+            connection_dialog_unlock(TRUE);
+            break;
+
+        case CONN_SOCKET_FAIL_TLS:
+        {
+            const gchar *det = tuner_ws_last_error();
+            gchar *m = g_strdup_printf("TLS error: %s",
+                                       det ? det : "install mingw-w64-ucrt-x86_64-glib-networking");
+            connection_dialog_status(m);
+            g_free(m);
+            connection_dialog_unlock(TRUE);
+            break;
+        }
         }
     }
 

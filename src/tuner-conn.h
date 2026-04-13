@@ -23,6 +23,9 @@
 #define CONN_SOCKET_FAIL_CONN    -2
 #define CONN_SOCKET_FAIL_AUTH    -3
 #define CONN_SOCKET_FAIL_WRITE   -4
+#define CONN_SOCKET_FAIL_URL     -5
+#define CONN_SOCKET_FAIL_UPGRADE -6
+#define CONN_SOCKET_FAIL_TLS     -7
 
 #define SOCKET_SALT_LEN 16
 #define SOCKET_AUTH_TIMEOUT 5
@@ -32,14 +35,22 @@ typedef struct conn
     gchar* hostname;
     gchar* port;
     gchar* password;
+    gchar* ws_path;          /* WebSocket path (e.g. /xdrgtk), NULL for raw TCP */
+    gboolean websocket;      /* TRUE when this is an fm-dx-webserver connection */
+    gboolean tls;            /* TRUE for wss:// / https:// URLs */
     volatile gboolean canceled;
     gint socketfd;
+    gpointer stream;         /* GIOStream* (owned) — set on successful WS connect */
+    gpointer cancel;         /* GCancellable* (owned) */
     gint state;
 } conn_t;
 
 gint tuner_open_serial(const gchar*, gintptr*);
 gpointer tuner_open_socket(gpointer);
+gpointer tuner_open_websocket(gpointer);
+const gchar* tuner_ws_last_error(void);
 
 conn_t* conn_new(const gchar*, const gchar* port, const gchar*);
+conn_t* conn_new_ws(const gchar* url, const gchar* password);
 void conn_free(conn_t*);
 #endif

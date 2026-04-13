@@ -23,6 +23,14 @@
 #include "ui-tuner-update.h"
 #include "conf.h"
 #include "rds-utils.h"
+#include <gio/gio.h>
+#include "tuner-conn.h"
+
+/* Declared in tuner-conn.c */
+extern gboolean ws_send_masked_frame(gpointer iostream, GCancellable *cancel,
+                                     guchar opcode, const guchar *payload, gsize len);
+extern gint     ws_read_frame(gpointer iostream, GCancellable *cancel,
+                              guchar **out_buf, gsize *out_len, guchar *out_op);
 
 #define DEBUG_READ  1
 #define DEBUG_WRITE 1
@@ -35,8 +43,14 @@ tuner_t tuner;
 typedef struct tuner_thread
 {
     gintptr fd;
-    gint type;  /* TUNER_THREAD_SERIAL or TUNER_THREAD_SOCKET */
+    gint type;  /* TUNER_THREAD_SERIAL, TUNER_THREAD_SOCKET or TUNER_THREAD_WEBSOCKET */
     volatile gboolean canceled;
+    /* WebSocket state (only used for TUNER_THREAD_WEBSOCKET) */
+    GIOStream    *ws_stream;
+    GCancellable *ws_cancel;
+    guchar *ws_buf;
+    gsize   ws_len;
+    gsize   ws_pos;
 } tuner_thread_t;
 
 static gpointer tuner_thread(gpointer);
@@ -50,11 +64,17 @@ tuner_thread_new(gint    type,
 {
     tuner_thread_t *thread = g_malloc(sizeof(tuner_thread_t));
     g_assert(type == TUNER_THREAD_SERIAL ||
-             type == TUNER_THREAD_SOCKET);
+             type == TUNER_THREAD_SOCKET ||
+             type == TUNER_THREAD_WEBSOCKET);
 
     thread->fd = fd;
     thread->type = type;
     thread->canceled = FALSE;
+    thread->ws_stream = NULL;
+    thread->ws_cancel = NULL;
+    thread->ws_buf = NULL;
+    thread->ws_len = 0;
+    thread->ws_pos = 0;
 
     g_thread_unref(g_thread_new("tuner", tuner_thread, (gpointer)thread));
     return thread;
@@ -63,7 +83,27 @@ tuner_thread_new(gint    type,
 void
 tuner_thread_cancel(gpointer thread)
 {
-    ((tuner_thread_t*)thread)->canceled = TRUE;
+    tuner_thread_t *t = (tuner_thread_t*)thread;
+    t->canceled = TRUE;
+    if (t->ws_cancel)
+        g_cancellable_cancel(t->ws_cancel);
+}
+
+gpointer
+tuner_thread_new_websocket(gpointer stream,  /* GIOStream*, ownership transferred */
+                           gpointer cancel)  /* GCancellable*, ownership transferred */
+{
+    tuner_thread_t *thread = g_malloc(sizeof(tuner_thread_t));
+    thread->fd = 0;
+    thread->type = TUNER_THREAD_WEBSOCKET;
+    thread->canceled = FALSE;
+    thread->ws_stream = G_IO_STREAM(stream);
+    thread->ws_cancel = G_CANCELLABLE(cancel);
+    thread->ws_buf = NULL;
+    thread->ws_len = 0;
+    thread->ws_pos = 0;
+    g_thread_unref(g_thread_new("tuner-ws", tuner_thread, (gpointer)thread));
+    return thread;
 }
 
 static gpointer
@@ -103,6 +143,33 @@ tuner_thread(gpointer data)
 
     while(!thread->canceled)
     {
+        if(thread->type == TUNER_THREAD_WEBSOCKET)
+        {
+            /* Serve bytes from the current frame buffer; refill by
+               reading the next WebSocket frame when empty. */
+            if(thread->ws_pos >= thread->ws_len)
+            {
+                g_free(thread->ws_buf);
+                thread->ws_buf = NULL;
+                thread->ws_len = 0;
+                thread->ws_pos = 0;
+
+                guchar *fbuf = NULL;
+                gsize   flen = 0;
+                guchar  fop  = 0;
+                gint r = ws_read_frame(thread->ws_stream, thread->ws_cancel,
+                                       &fbuf, &flen, &fop);
+                if(r < 0)
+                    break;
+                if(r == 0) /* control frame handled internally */
+                    continue;
+                thread->ws_buf = fbuf;
+                thread->ws_len = flen;
+                thread->ws_pos = 0;
+            }
+            buffer[pos] = (gchar)thread->ws_buf[thread->ws_pos++];
+            goto have_byte;
+        }
 #ifdef G_OS_WIN32
         if(thread->type == TUNER_THREAD_SOCKET)
         {
@@ -171,6 +238,7 @@ tuner_thread(gpointer data)
         if(n < 0 || read(thread->fd, &buffer[pos], 1) <= 0)
             break;
 #endif
+    have_byte:
         /* If this command is too long to
          * fit into a buffer, clip it */
         if(buffer[pos] != '\n')
@@ -190,7 +258,26 @@ tuner_thread(gpointer data)
     }
 
 tuner_thread_cleanup:
-    if(thread->type == TUNER_THREAD_SOCKET)
+    g_free(thread->ws_buf);
+    thread->ws_buf = NULL;
+    if(thread->type == TUNER_THREAD_WEBSOCKET)
+    {
+        if (thread->ws_stream)
+        {
+            /* Best-effort close frame. */
+            if (!thread->canceled)
+                ws_send_masked_frame(thread->ws_stream, NULL, 0x8, NULL, 0);
+            g_io_stream_close(thread->ws_stream, NULL, NULL);
+            g_object_unref(thread->ws_stream);
+            thread->ws_stream = NULL;
+        }
+        if (thread->ws_cancel)
+        {
+            g_object_unref(thread->ws_cancel);
+            thread->ws_cancel = NULL;
+        }
+    }
+    else if(thread->type == TUNER_THREAD_SOCKET)
     {
 #ifdef G_OS_WIN32
         shutdown(thread->fd, 2);
@@ -430,6 +517,9 @@ tuner_write(gpointer  ptr,
 
     if(thread->type == TUNER_THREAD_SERIAL)
         ret = tuner_write_serial(thread->fd, msg, len);
+    else if(thread->type == TUNER_THREAD_WEBSOCKET)
+        ret = ws_send_masked_frame(thread->ws_stream, thread->ws_cancel,
+                                   0x1, (const guchar*)msg, len);
     else
         ret = tuner_write_socket(thread->fd, msg, len);
 
@@ -575,6 +665,13 @@ callback_ps(rdsparser_t *rds,
 }
 
 static void
+callback_lps(rdsparser_t *rds,
+             void        *user_data)
+{
+    ui_update_lps();
+}
+
+static void
 callback_rt(rdsparser_t         *rds,
             rdsparser_rt_flag_t  flag,
             void                *user_data)
@@ -622,6 +719,7 @@ tuner_rds_init()
     rdsparser_register_country(tuner.rds, callback_country);
     rdsparser_register_af(tuner.rds, callback_af);
     rdsparser_register_ps(tuner.rds, callback_ps);
+    rdsparser_register_lps(tuner.rds, callback_lps);
     rdsparser_register_rt(tuner.rds, callback_rt);
     rdsparser_register_ct(tuner.rds, callback_ct);
 }
@@ -707,6 +805,7 @@ void tuner_clear_rds()
     ui_update_ms();
     ui_update_pty();
     ui_update_country();
+    ui_update_lps();
     ui_update_ps();
     ui_update_rt(0);
     ui_update_rt(1);

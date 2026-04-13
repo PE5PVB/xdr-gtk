@@ -5,6 +5,8 @@ set(SOURCE_FILES
         antpatt.h
         audio_bridge.c
         audio_bridge.h
+        audio_bridge_debug.c
+        audio_bridge_debug.h
         conf.c
         conf.h
         conf-defaults.h

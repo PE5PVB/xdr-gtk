@@ -22,6 +22,7 @@ void ui_update_ms();
 void ui_update_pty();
 void ui_update_country();
 void ui_update_ps();
+void ui_update_lps();
 void ui_update_rt(gboolean);
 void ui_update_af(gint);
 

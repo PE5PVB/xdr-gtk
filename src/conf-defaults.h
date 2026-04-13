@@ -15,6 +15,7 @@
 #define CONF_CONNECTION_HOST     "localhost"
 #define CONF_CONNECTION_PORT     7373
 #define CONF_CONNECTION_PASSWORD ""
+#define CONF_CONNECTION_WEBSERVER_URL ""
 
 /* Tuner settings */
 #define CONF_TUNER_VOLUME     100

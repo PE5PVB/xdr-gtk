@@ -28,6 +28,8 @@ static const gchar *key_serial             = "serial";
 static const gchar *key_host               = "host";
 static const gchar *key_port               = "port";
 static const gchar *key_password           = "password";
+static const gchar *key_webserver_url      = "webserver_url";
+static const gchar *key_connection_mode    = "connection_mode";
 static const gchar *key_volume             = "volume";
 static const gchar *key_rfgain             = "rfgain";
 static const gchar *key_ifgain             = "ifgain";
@@ -233,6 +235,8 @@ conf_read()
     conf.host     = conf_read_strings(keyfile, group_connection, key_host,     default_host);
     conf.port     = conf_read_integer(keyfile, group_connection, key_port,     CONF_CONNECTION_PORT);
     conf.password = conf_read_string (keyfile, group_connection, key_password, CONF_CONNECTION_PASSWORD);
+    conf.webserver_url   = conf_read_string (keyfile, group_connection, key_webserver_url,   CONF_CONNECTION_WEBSERVER_URL);
+    conf.connection_mode = conf_read_integer(keyfile, group_connection, key_connection_mode, conf.network ? 1 : 0);
 
     /* Tuner settings */
     conf.volume     = conf_read_integer(keyfile, group_tuner, key_volume,     CONF_TUNER_VOLUME);
@@ -399,6 +403,8 @@ conf_write()
     g_key_file_set_string_list(keyfile, group_connection, key_host,     (const gchar* const*)conf.host, g_strv_length(conf.host));
     g_key_file_set_integer    (keyfile, group_connection, key_port,     conf.port);
     g_key_file_set_string     (keyfile, group_connection, key_password, conf.password);
+    g_key_file_set_string     (keyfile, group_connection, key_webserver_url,   conf.webserver_url ? conf.webserver_url : "");
+    g_key_file_set_integer    (keyfile, group_connection, key_connection_mode, conf.connection_mode);
 
     /* Tuner settings */
     g_key_file_set_integer(keyfile, group_tuner, key_volume,     conf.volume);

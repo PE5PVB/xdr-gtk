@@ -12,6 +12,7 @@
 #include "stationlist.h"
 #include "tuner.h"
 #include "audio_bridge.h"
+#include "audio_bridge_debug.h"
 #ifdef G_OS_WIN32
 #include "win32.h"
 #endif
@@ -89,6 +90,7 @@ static GtkWidget *l_audio_bridge_input, *c_audio_bridge_input, *b_audio_bridge_i
 static GtkWidget *l_audio_bridge_output, *c_audio_bridge_output, *b_audio_bridge_output_refresh;
 static GtkWidget *l_audio_bridge_info;
 static GtkWidget *l_audio_bridge_status;
+static GtkWidget *b_audio_bridge_debug;
 static guint      audio_bridge_status_timer = 0;
 static GList     *audio_bridge_input_devices = NULL;
 static GList     *audio_bridge_output_devices = NULL;
@@ -97,6 +99,7 @@ static void settings_audio_bridge_populate(GtkComboBoxText *combo, GList **list_
 static void settings_audio_bridge_refresh_input(GtkButton *btn, gpointer data);
 static void settings_audio_bridge_refresh_output(GtkButton *btn, gpointer data);
 static gboolean settings_audio_bridge_status_tick(gpointer data);
+static void settings_audio_bridge_debug(GtkButton *btn, gpointer data);
 
 /* Keyboard page */
 static GtkWidget *page_key;
@@ -887,6 +890,17 @@ settings_dialog(gint tab_num)
        dialog destroy paths below. */
     settings_audio_bridge_status_tick(NULL);
     audio_bridge_status_timer = g_timeout_add(500, settings_audio_bridge_status_tick, NULL);
+
+    row++;
+    b_audio_bridge_debug = gtk_button_new_with_label("Open debug window…");
+    gtk_widget_set_tooltip_text(b_audio_bridge_debug,
+        "Opens a diagnostic window with live counters for the audio bridge. "
+        "Temporary helper for debugging the silent-after-a-while problem.");
+    gtk_widget_set_margin_top(b_audio_bridge_debug, 4);
+    gtk_widget_set_halign(b_audio_bridge_debug, GTK_ALIGN_START);
+    g_signal_connect(b_audio_bridge_debug, "clicked",
+                     G_CALLBACK(settings_audio_bridge_debug), NULL);
+    gtk_grid_attach(GTK_GRID(grid_audio_bridge), b_audio_bridge_debug, 0, row, 3, 1);
 
     row++;
     l_audio_bridge_info = gtk_label_new(
@@ -1725,6 +1739,13 @@ settings_audio_bridge_status_tick(gpointer data)
     gtk_label_set_markup(GTK_LABEL(l_audio_bridge_status), markup);
     g_free(markup);
     return G_SOURCE_CONTINUE;
+}
+
+static void
+settings_audio_bridge_debug(GtkButton *btn, gpointer data)
+{
+    (void)btn; (void)data;
+    audio_bridge_debug_show();
 }
 
 static void

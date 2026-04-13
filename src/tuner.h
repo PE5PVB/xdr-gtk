@@ -5,8 +5,9 @@
 #include "conf.h"
 #include "tuner-filters.h"
 
-#define TUNER_THREAD_SERIAL 0
-#define TUNER_THREAD_SOCKET 1
+#define TUNER_THREAD_SERIAL    0
+#define TUNER_THREAD_SOCKET    1
+#define TUNER_THREAD_WEBSOCKET 2
 
 #define MODE_FM 0
 #define MODE_AM 1
@@ -97,6 +98,7 @@ typedef struct tuner
 extern tuner_t tuner;
 
 gpointer tuner_thread_new(gint, gintptr);
+gpointer tuner_thread_new_websocket(gpointer stream, gpointer cancel);
 gboolean tuner_write_socket(gintptr, gchar*, int);
 void tuner_thread_cancel(gpointer);
 void tuner_write(gpointer, gchar*);

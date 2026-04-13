@@ -54,6 +54,26 @@ main(gint   argc,
      gchar *argv[])
 {
     gtk_disable_setlocale();
+
+#ifdef G_OS_WIN32
+    /* Point GdkPixbuf at the bundled PNG loader so icons render when the
+       app is launched outside an MSYS2 shell (e.g. from Explorer or the
+       deployment bundle). Must be set before gtk_init(). */
+    if (!g_getenv("GDK_PIXBUF_MODULE_FILE"))
+    {
+        gchar *exe_dir = g_win32_get_package_installation_directory_of_module(NULL);
+        if (exe_dir)
+        {
+            gchar *cache = g_build_filename(exe_dir, "lib", "gdk-pixbuf-2.0",
+                                            "2.10.0", "loaders.cache", NULL);
+            if (g_file_test(cache, G_FILE_TEST_EXISTS))
+                g_setenv("GDK_PIXBUF_MODULE_FILE", cache, TRUE);
+            g_free(cache);
+            g_free(exe_dir);
+        }
+    }
+#endif
+
     gtk_init(&argc, &argv);
 
     g_resources_register(icons_get_resource());
